@@ -1,0 +1,20 @@
+[package]
+name = "noodle"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "noodle"
+path = "main.rs"
+
+[lib]
+name = "noodle"
+path = "lib.rs"
+
+[dependencies]
+burn = { version = "0.20", features = ["wgpu", "ndarray", "autodiff", "train"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiktoken-rs = "0.6"
+rand = "0.8"

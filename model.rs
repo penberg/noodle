@@ -169,14 +169,15 @@ impl<B: Backend> Model<B> {
         let pos_ids = Tensor::from_data(TensorData::new(pos_data, [1, seq_len]), device);
 
         // Causal mask [1, 1, seq_len, seq_len]: 0 for attend, -1e9 for mask
-        // triu_mask with offset 1 gives True for positions ABOVE diagonal (future)
-        let future_mask: Tensor<B, 2, Bool> = Tensor::triu_mask([seq_len, seq_len], 1, device);
+        // triu_mask returns FALSE for upper triangle (future), TRUE for lower triangle (past/current)
+        // (it's a "mask for upper triangle operation", not "upper triangle is true")
+        let attn_mask: Tensor<B, 2, Bool> = Tensor::triu_mask([seq_len, seq_len], 1, device);
         let zeros: Tensor<B, 2> = Tensor::zeros([seq_len, seq_len], device);
         let large_neg: Tensor<B, 2> = Tensor::full([seq_len, seq_len], -1e9f32, device);
-        // mask_where puts second arg where condition is TRUE, keeps first arg where FALSE
-        // We want -1e9 where future_mask is TRUE (can't attend to future)
-        // But empirically mask_where seems inverted, so swap the order:
-        let mask = large_neg.mask_where(future_mask, zeros);
+        // mask_where: self.mask_where(mask, value) → value where TRUE, self where FALSE
+        // TRUE (past/current, j ≤ i) → zeros (can attend)
+        // FALSE (future, j > i) → large_neg (blocked)
+        let mask = large_neg.mask_where(attn_mask, zeros);
         let mask = mask.reshape([1, 1, seq_len, seq_len]);
 
         let tok_emb = self.token_emb.forward(token_ids);

@@ -164,8 +164,9 @@ impl<B: Backend> Model<B> {
     pub fn forward(&self, token_ids: Tensor<B, 2, Int>, device: &B::Device) -> Tensor<B, 3> {
         let [_batch, seq_len] = token_ids.dims();
 
-        // Create position IDs [1, seq_len] for actual sequence length
-        let pos_ids = create_position_ids::<B>(seq_len, device);
+        // Position IDs [1, seq_len]: 0, 1, 2, ..., seq_len-1
+        let pos_data: Vec<i32> = (0..seq_len as i32).collect();
+        let pos_ids = Tensor::from_data(TensorData::new(pos_data, [1, seq_len]), device);
 
         // Create causal mask [1, 1, seq_len, seq_len] for actual sequence length
         let mask = create_causal_mask::<B>(seq_len, device);
@@ -289,12 +290,6 @@ fn create_causal_mask<B: Backend>(seq_len: usize, device: &B::Device) -> Tensor<
     let causal_mask = large_neg.mask_where(future_mask, zeros);
 
     causal_mask.reshape([1, 1, seq_len, seq_len])
-}
-
-/// Create position IDs [1, seq_len]
-fn create_position_ids<B: Backend>(seq_len: usize, device: &B::Device) -> Tensor<B, 2, Int> {
-    let pos_data: Vec<i32> = (0..seq_len as i32).collect();
-    Tensor::from_data(TensorData::new(pos_data, [1, seq_len]), device)
 }
 
 /// Wraps a [`Model`] with an optimizer for training.

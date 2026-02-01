@@ -13,20 +13,6 @@ use crate::{
     tokenizer::Tokenize,
 };
 
-fn format_duration(secs: f32) -> String {
-    let secs = secs as u64;
-    let hours = secs / 3600;
-    let mins = (secs % 3600) / 60;
-    let secs = secs % 60;
-    if hours > 0 {
-        format!("{}h {:02}m {:02}s", hours, mins, secs)
-    } else if mins > 0 {
-        format!("{}m {:02}s", mins, secs)
-    } else {
-        format!("{}s", secs)
-    }
-}
-
 // Canonical Noodle model hyperparameters (sized for small datasets ~300K-1M tokens)
 const LAYERS: usize = 4;
 const D_MODEL: usize = 256;
@@ -298,4 +284,18 @@ fn train_loop<B: AutodiffBackend>(
     );
 
     Ok(())
+}
+
+fn format_duration(secs: f32) -> String {
+    let secs = secs as u64;
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    let secs = secs % 60;
+    if hours > 0 {
+        format!("{}h {:02}m {:02}s", hours, mins, secs)
+    } else if mins > 0 {
+        format!("{}m {:02}s", mins, secs)
+    } else {
+        format!("{}s", secs)
+    }
 }

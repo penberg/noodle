@@ -21,7 +21,7 @@ const CTX_LEN: usize = 256;
 const VOCAB_SIZE: usize = 50281; // p50k_base tokenizer
 
 // Training hyperparameters
-const BATCH_SIZE: usize = 4;
+const BATCH_SIZE: usize = 8;
 const LOG_INTERVAL: usize = 10;
 const BASE_LEARNING_RATE: f64 = 1e-4;
 const BASE_BATCH_SIZE: usize = 4; // LR is scaled linearly relative to this

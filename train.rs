@@ -1,17 +1,17 @@
-use std::path::Path;
-use std::time::Instant;
+use std::{path::Path, time::Instant};
 
-use burn::backend::ndarray::NdArrayDevice;
-use burn::backend::wgpu::WgpuDevice;
-use burn::backend::{Autodiff, NdArray, Wgpu};
-use burn::module::AutodiffModule;
-use burn::tensor::backend::AutodiffBackend;
-use burn::tensor::{Int, Tensor, TensorData};
-
-use crate::Result;
-use crate::model::{ModelConfig, Trainer};
-use crate::tokenizer::Tokenize;
+use burn::{
+    backend::{Autodiff, NdArray, Wgpu, ndarray::NdArrayDevice, wgpu::WgpuDevice},
+    module::AutodiffModule,
+    tensor::{Int, Tensor, TensorData, backend::AutodiffBackend},
+};
 use serde_json;
+
+use crate::{
+    Result,
+    model::{ModelConfig, Trainer},
+    tokenizer::Tokenize,
+};
 
 fn format_duration(secs: f32) -> String {
     let secs = secs as u64;

@@ -6,10 +6,9 @@ Noodle is a minimal and clean small language model, following the GPT-2 decoder-
 
 ## Command Line Interface
 
-Noodle provides three commands:
+Noodle provides two commands:
 
 - **train** — Takes a text corpus, produces a model file
-- **generate** — Takes a model file and prompt, produces text
 - **chat** — Interactive generation loop
 
 Model files use Burn's MessagePack format (`.mpk`) for weights, with a companion JSON file (`.json`) storing architecture configuration (layer count, dimensions, vocabulary size).

@@ -23,7 +23,8 @@ const VOCAB_SIZE: usize = 50281; // p50k_base tokenizer
 // Training hyperparameters
 const BATCH_SIZE: usize = 4;
 const LOG_INTERVAL: usize = 10;
-const LEARNING_RATE: f64 = 1e-4;
+const BASE_LEARNING_RATE: f64 = 1e-4;
+const BASE_BATCH_SIZE: usize = 4; // LR is scaled linearly relative to this
 
 // Early stopping: stop if validation loss doesn't improve by MIN_IMPROVEMENT for PATIENCE epochs
 const PATIENCE: usize = 5;
@@ -80,6 +81,13 @@ fn train_loop<B: AutodiffBackend>(
     }
 
     let mut trainer: Trainer<B> = Trainer::new(config, &device);
+
+    // Scale learning rate linearly with batch size
+    let learning_rate = BASE_LEARNING_RATE * (BATCH_SIZE as f64 / BASE_BATCH_SIZE as f64);
+    eprintln!(
+        "Learning rate: {:.2e} (base {:.2e} scaled for batch size {})",
+        learning_rate, BASE_LEARNING_RATE, BATCH_SIZE
+    );
 
     // Split tokens into train and validation sets
     let val_size = ((tokens.len() as f32) * VAL_SPLIT) as usize;
@@ -170,7 +178,7 @@ fn train_loop<B: AutodiffBackend>(
             let target: Tensor<B, 2, Int> =
                 Tensor::from_data(TensorData::new(target_data, [BATCH_SIZE, ctx_len]), &device);
 
-            let loss = trainer.train_step(input, target, LEARNING_RATE, &device);
+            let loss = trainer.train_step(input, target, learning_rate, &device);
             total_train_loss += loss;
             interval_loss += loss;
             interval_count += 1;

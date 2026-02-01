@@ -168,8 +168,16 @@ impl<B: Backend> Model<B> {
         let pos_data: Vec<i32> = (0..seq_len as i32).collect();
         let pos_ids = Tensor::from_data(TensorData::new(pos_data, [1, seq_len]), device);
 
-        // Create causal mask [1, 1, seq_len, seq_len] for actual sequence length
-        let mask = create_causal_mask::<B>(seq_len, device);
+        // Causal mask [1, 1, seq_len, seq_len]: 0 for attend, -1e9 for mask
+        // triu_mask with offset 1 gives True for positions ABOVE diagonal (future)
+        let future_mask: Tensor<B, 2, Bool> = Tensor::triu_mask([seq_len, seq_len], 1, device);
+        let zeros: Tensor<B, 2> = Tensor::zeros([seq_len, seq_len], device);
+        let large_neg: Tensor<B, 2> = Tensor::full([seq_len, seq_len], -1e9f32, device);
+        // mask_where puts second arg where condition is TRUE, keeps first arg where FALSE
+        // We want -1e9 where future_mask is TRUE (can't attend to future)
+        // But empirically mask_where seems inverted, so swap the order:
+        let mask = large_neg.mask_where(future_mask, zeros);
+        let mask = mask.reshape([1, 1, seq_len, seq_len]);
 
         let tok_emb = self.token_emb.forward(token_ids);
         let pos_emb = self.pos_emb.forward(pos_ids);
@@ -274,22 +282,6 @@ impl<B: Backend> TransformerBlock<B> {
 
         x + h
     }
-}
-
-/// Create causal attention mask [1, 1, seq_len, seq_len]
-/// Positions can attend to themselves and all previous positions.
-/// Future positions are masked with -1e9.
-fn create_causal_mask<B: Backend>(seq_len: usize, device: &B::Device) -> Tensor<B, 4> {
-    // triu_mask with offset 1 gives True for positions ABOVE diagonal (future)
-    let future_mask: Tensor<B, 2, Bool> = Tensor::triu_mask([seq_len, seq_len], 1, device);
-    let zeros: Tensor<B, 2> = Tensor::zeros([seq_len, seq_len], device);
-    let large_neg: Tensor<B, 2> = Tensor::full([seq_len, seq_len], -1e9f32, device);
-    // mask_where puts second arg where condition is TRUE, keeps first arg where FALSE
-    // We want -1e9 where future_mask is TRUE (can't attend to future)
-    // But empirically mask_where seems inverted, so swap the order:
-    let causal_mask = large_neg.mask_where(future_mask, zeros);
-
-    causal_mask.reshape([1, 1, seq_len, seq_len])
 }
 
 /// Wraps a [`Model`] with an optimizer for training.

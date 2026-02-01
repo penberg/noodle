@@ -33,7 +33,7 @@ Noodle has a single canonical model configuration, sized for small datasets (~30
 | Vocab | 50,281 | p50k_base tokenizer |
 | Dropout | 0.1 | Applied after attention and FFN |
 
-This yields ~13M parameters — small enough to train on consumer hardware in minutes, appropriately sized for small datasets to avoid overfitting.
+This yields ~29M parameters — small enough to train on consumer hardware in minutes, appropriately sized for small datasets to avoid overfitting.
 
 ### Parameter Count Breakdown
 

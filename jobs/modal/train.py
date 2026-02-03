@@ -6,7 +6,7 @@ Usage:
     modal volume put noodle-data corpus/tinystories-train.txt /corpus/
 
     # Run training
-    modal run jobs/modal/train.py --max-epochs 20
+    modal run jobs/modal/train.py --corpus-file /data/corpus/tinystories-train.txt --max-epochs 20
 
     # List volume contents
     modal run jobs/modal/train.py::list_volume
@@ -68,7 +68,7 @@ image = (
     timeout=86400,  # 24 hours max
 )
 def train_noodle(
-    corpus_file: str = "/data/corpus/tinystories-train.txt",
+    corpus_file: str,
     model_dir: str = "/data/models/noodle",
     max_epochs: int = 10,
 ):
@@ -158,14 +158,14 @@ def list_volume(path: str = "/data"):
 
 @app.local_entrypoint()
 def main(
-    corpus_file: str = "/data/corpus/tinystories-train.txt",
+    corpus_file: str,
     model_dir: str = "/data/models/noodle",
     max_epochs: int = 10,
 ):
     """Train Noodle on Modal GPU.
 
     Args:
-        corpus_file: Path to corpus file in the volume (default: /data/corpus/tinystories-train.txt)
+        corpus_file: Path to corpus file in the volume (e.g., /data/corpus/tinystories-train.txt)
         model_dir: Directory to save model in the volume (default: /data/models/noodle)
         max_epochs: Maximum training epochs (default: 10)
     """

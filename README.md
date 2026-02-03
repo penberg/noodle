@@ -71,7 +71,7 @@ For faster training, you can use [Modal](https://modal.com/) to train on cloud G
 
 ```console
 > uv run modal volume put noodle-data corpus/tinystories-train.txt /corpus/
-> uv run modal run jobs/modal/train.py --max-epochs 20
+> uv run modal run jobs/modal/train.py --corpus-file /data/corpus/tinystories-train.txt --max-epochs 20
 ```
 
 **Download trained model to local machine:**

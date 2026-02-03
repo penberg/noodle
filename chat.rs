@@ -1,24 +1,33 @@
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
+use burn::backend::cuda::CudaDevice;
 use burn::backend::ndarray::NdArrayDevice;
 use burn::backend::wgpu::WgpuDevice;
-use burn::backend::{NdArray, Wgpu};
+use burn::backend::{Cuda, NdArray, Wgpu};
 use burn::prelude::Backend;
 
 use noodle::Tokenize;
 use noodle::inference::SamplingConfig;
 use noodle::model::Model;
 
-pub fn chat(model_path: &PathBuf, use_gpu: bool) -> noodle::Result<()> {
-    if use_gpu {
-        let device = WgpuDevice::default();
-        eprintln!("Using GPU device: {:?}", device);
-        chat_loop::<Wgpu<f32, i32>>(model_path, device)
-    } else {
-        let device = NdArrayDevice::default();
-        eprintln!("Using CPU device: {:?}", device);
-        chat_loop::<NdArray<f32>>(model_path, device)
+pub fn chat(model_path: &PathBuf, backend: noodle::Backend) -> noodle::Result<()> {
+    match backend {
+        noodle::Backend::Wgpu => {
+            let device = WgpuDevice::default();
+            eprintln!("Using wgpu device: {:?}", device);
+            chat_loop::<Wgpu<f32, i32>>(model_path, device)
+        }
+        noodle::Backend::Cuda => {
+            let device = CudaDevice::default();
+            eprintln!("Using CUDA device: {:?}", device);
+            chat_loop::<Cuda<f32, i32>>(model_path, device)
+        }
+        noodle::Backend::Cpu => {
+            let device = NdArrayDevice::default();
+            eprintln!("Using CPU device: {:?}", device);
+            chat_loop::<NdArray<f32>>(model_path, device)
+        }
     }
 }
 

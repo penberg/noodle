@@ -1,7 +1,9 @@
 use std::{path::Path, time::Instant};
 
 use burn::{
-    backend::{Autodiff, NdArray, Wgpu, ndarray::NdArrayDevice, wgpu::WgpuDevice},
+    backend::{
+        Autodiff, Cuda, NdArray, Wgpu, cuda::CudaDevice, ndarray::NdArrayDevice, wgpu::WgpuDevice,
+    },
     module::AutodiffModule,
     tensor::{Int, Tensor, TensorData, backend::AutodiffBackend},
 };
@@ -33,9 +35,19 @@ const MIN_IMPROVEMENT: f32 = 0.01;
 // Train/validation split ratio (90% train, 10% validation)
 const VAL_SPLIT: f32 = 0.1;
 
-pub fn train(input: &Path, output: &Path, use_gpu: bool, max_epochs: usize) -> Result<()> {
+pub fn train(
+    input: &Path,
+    output: &Path,
+    backend: crate::Backend,
+    max_epochs: usize,
+) -> Result<()> {
     #[cfg(debug_assertions)]
     eprintln!("Warning: running in debug mode, use --release for faster training");
+
+    // Log available GPU adapters for wgpu backend
+    if matches!(backend, crate::Backend::Wgpu) {
+        log_gpu_adapters();
+    }
 
     // Create output directory and save config before training
     std::fs::create_dir_all(output)?;
@@ -49,14 +61,22 @@ pub fn train(input: &Path, output: &Path, use_gpu: bool, max_epochs: usize) -> R
     let tokens = input.tokenize()?;
     eprintln!("Loaded {} tokens", tokens.len());
 
-    if use_gpu {
-        let device = WgpuDevice::default();
-        eprintln!("Using GPU device: {:?}", device);
-        train_loop::<Autodiff<Wgpu<f32, i32>>>(config, &tokens, output, device, max_epochs)
-    } else {
-        let device = NdArrayDevice::default();
-        eprintln!("Using CPU device: {:?}", device);
-        train_loop::<Autodiff<NdArray<f32>>>(config, &tokens, output, device, max_epochs)
+    match backend {
+        crate::Backend::Wgpu => {
+            let device = WgpuDevice::default();
+            eprintln!("Using wgpu device: {:?}", device);
+            train_loop::<Autodiff<Wgpu<f32, i32>>>(config, &tokens, output, device, max_epochs)
+        }
+        crate::Backend::Cuda => {
+            let device = CudaDevice::default();
+            eprintln!("Using CUDA device: {:?}", device);
+            train_loop::<Autodiff<Cuda<f32, i32>>>(config, &tokens, output, device, max_epochs)
+        }
+        crate::Backend::Cpu => {
+            let device = NdArrayDevice::default();
+            eprintln!("Using CPU device: {:?}", device);
+            train_loop::<Autodiff<NdArray<f32>>>(config, &tokens, output, device, max_epochs)
+        }
     }
 }
 
@@ -292,6 +312,30 @@ fn train_loop<B: AutodiffBackend>(
     );
 
     Ok(())
+}
+
+fn log_gpu_adapters() {
+    use wgpu::{Backends, Instance, InstanceDescriptor};
+
+    let instance = Instance::new(&InstanceDescriptor {
+        backends: Backends::all(),
+        ..Default::default()
+    });
+
+    let adapters = instance.enumerate_adapters(Backends::all());
+
+    eprintln!("Available GPU adapters ({}):", adapters.len());
+    for (i, adapter) in adapters.iter().enumerate() {
+        let info = adapter.get_info();
+        eprintln!(
+            "  [{}] {} ({:?}, {:?})",
+            i, info.name, info.device_type, info.backend
+        );
+    }
+
+    if adapters.is_empty() {
+        eprintln!("  WARNING: No GPU adapters found!");
+    }
 }
 
 fn format_duration(secs: f32) -> String {

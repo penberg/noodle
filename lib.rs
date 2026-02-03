@@ -9,6 +9,14 @@ pub use inference::generate_next_token;
 pub use tokenizer::{Token, Tokenize, decode};
 pub use train::train;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Backend {
+    #[default]
+    Wgpu,
+    Cuda,
+    Cpu,
+}
+
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),

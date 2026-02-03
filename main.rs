@@ -15,6 +15,7 @@ struct Opts {
 pub enum Backend {
     #[default]
     Gpu,
+    Cuda,
     Cpu,
 }
 
@@ -49,6 +50,7 @@ enum Cmd {
 }
 
 fn main() {
+    env_logger::init();
     let opts = Opts::parse();
 
     match opts.command {
@@ -58,12 +60,20 @@ fn main() {
             backend,
             max_epochs,
         } => {
-            let use_gpu = matches!(backend, Backend::Gpu);
-            noodle::train(&input, &output, use_gpu, max_epochs).expect("training failed");
+            let backend = match backend {
+                Backend::Gpu => noodle::Backend::Wgpu,
+                Backend::Cuda => noodle::Backend::Cuda,
+                Backend::Cpu => noodle::Backend::Cpu,
+            };
+            noodle::train(&input, &output, backend, max_epochs).expect("training failed");
         }
         Cmd::Chat { model, backend } => {
-            let use_gpu = matches!(backend, Backend::Gpu);
-            chat::chat(&model, use_gpu).expect("chat failed");
+            let backend = match backend {
+                Backend::Gpu => noodle::Backend::Wgpu,
+                Backend::Cuda => noodle::Backend::Cuda,
+                Backend::Cpu => noodle::Backend::Cpu,
+            };
+            chat::chat(&model, backend).expect("chat failed");
         }
     }
 }

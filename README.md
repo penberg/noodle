@@ -43,6 +43,51 @@ Then, train the model with the full dataset:
 > cargo run --release -- train corpus/tinystories-train.txt models/noodle --max-epochs 20
 ```
 
+### Training on cloud GPUs (Modal)
+
+For faster training, you can use [Modal](https://modal.com/) to train on cloud GPUs.
+
+**Prerequisites:**
+
+```console
+> uv pip install modal
+> uv run modal setup
+```
+
+**Create Modal volume:**
+
+```console
+> uv run modal volume create noodle-data
+```
+
+**Test with small dataset first:**
+
+```console
+> uv run modal volume put noodle-data corpus/tinystories-test.txt /corpus/
+> uv run modal run jobs/modal/train.py --corpus-file /data/corpus/tinystories-test.txt --max-epochs 1
+```
+
+**Run full training on Modal GPU:**
+
+```console
+> uv run modal volume put noodle-data corpus/tinystories-train.txt /corpus/
+> uv run modal run jobs/modal/train.py --max-epochs 20
+```
+
+**Download trained model to local machine:**
+
+```console
+> mkdir -p models/noodle
+> uv run modal volume get noodle-data /models/noodle/model.json ./models/noodle/
+> uv run modal volume get noodle-data /models/noodle/model.mpk ./models/noodle/
+```
+
+You can inspect the volume contents with:
+
+```console
+> uv run modal run jobs/modal/train.py::list_volume
+```
+
 ### Running inference
 
 When you have a trained model, you can use it for inference:

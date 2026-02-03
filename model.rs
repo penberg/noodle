@@ -260,11 +260,15 @@ impl<B: Backend> TransformerBlock<B> {
         let k = k.swap_dims(1, 2);
         let v = v.swap_dims(1, 2);
 
+        // QK norm: normalize Q and K to prevent attention score explosion
+        // RMS norm: x / sqrt(mean(x^2) + eps), applied along last dim (d_head)
+        let q = Self::rms_norm(q);
+        let k = Self::rms_norm(k);
+
         let scale = (self.d_head as f32).sqrt();
         let k_t = k.swap_dims(2, 3);
         let attn = q.matmul(k_t) / scale;
         let attn = attn + mask.clone();
-        let attn = attn.clamp(-1e4, 1e4); // Prevent softmax overflow
         let attn = activation::softmax(attn, 3);
         let out = attn.matmul(v);
 
@@ -282,6 +286,21 @@ impl<B: Backend> TransformerBlock<B> {
         let h = self.ffn_dropout.forward(h);
 
         x + h
+    }
+
+    /// RMS normalization along the last dimension (no learnable parameters).
+    ///
+    /// Formula: `x / sqrt(mean(x^2) + eps)`
+    ///
+    /// Used for QK norm to prevent attention score explosion. By normalizing Q and K
+    /// vectors before computing attention scores, the dot product becomes a cosine
+    /// similarity bounded by the geometry rather than unbounded magnitudes.
+    fn rms_norm<const D: usize>(x: Tensor<B, D>) -> Tensor<B, D> {
+        let eps = 1e-6;
+        let x_sq = x.clone().powf_scalar(2.0);
+        let mean_sq = x_sq.mean_dim(D - 1);
+        let rms = (mean_sq + eps).sqrt();
+        x / rms
     }
 }
 

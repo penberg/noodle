@@ -101,7 +101,14 @@ Multi-head scaled dot-product attention with causal masking:
    Q = Q.reshape(batch, seq_len, heads, d_head).transpose(1, 2)
    ```
 
-3. **Scaled dot-product attention**:
+3. **QK Norm**: Normalize Q and K before computing attention scores:
+   ```
+   Q = Q / sqrt(mean(Q^2) + eps)  # RMS norm
+   K = K / sqrt(mean(K^2) + eps)
+   ```
+   This prevents attention score explosion during training. Without normalization, Q·K^T can produce arbitrarily large values as weights grow, causing softmax overflow and NaN loss. With QK norm, the dot product becomes a cosine similarity bounded by geometry.
+
+4. **Scaled dot-product attention**:
    ```
    scores = (Q @ K.T) / sqrt(d_head)
    scores = scores + causal_mask  # -1e9 for future positions
@@ -109,7 +116,7 @@ Multi-head scaled dot-product attention with causal masking:
    out = attn @ V
    ```
 
-4. **Output projection**: Linear back to d_model, then dropout:
+5. **Output projection**: Linear back to d_model, then dropout:
    ```
    out = Dropout(Linear(d_model, d_model)(out.reshape(...)))
    ```

@@ -1,10 +1,12 @@
 #![recursion_limit = "256"]
 
+pub mod eval;
 pub mod inference;
 pub mod model;
 pub mod tokenizer;
 pub mod train;
 
+pub use eval::eval;
 pub use inference::generate_next_token;
 pub use tokenizer::{Token, Tokenize, decode};
 pub use train::train;

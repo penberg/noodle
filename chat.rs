@@ -1,5 +1,5 @@
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use burn::backend::cuda::CudaDevice;
 use burn::backend::ndarray::NdArrayDevice;
@@ -31,7 +31,7 @@ pub fn chat(model_path: &PathBuf, backend: noodle::Backend) -> noodle::Result<()
     }
 }
 
-fn chat_loop<B: Backend>(model_path: &PathBuf, device: B::Device) -> noodle::Result<()> {
+fn chat_loop<B: Backend>(model_path: &Path, device: B::Device) -> noodle::Result<()> {
     let model = Model::<B>::load(model_path, &device)?;
 
     println!();

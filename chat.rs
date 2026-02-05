@@ -1,5 +1,5 @@
 use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use burn::backend::cuda::CudaDevice;
 use burn::backend::ndarray::NdArrayDevice;
@@ -11,7 +11,7 @@ use noodle::Tokenize;
 use noodle::inference::SamplingConfig;
 use noodle::model::Model;
 
-pub fn chat(model_path: &PathBuf, backend: noodle::Backend) -> noodle::Result<()> {
+pub fn chat(model_path: &Path, backend: noodle::Backend) -> noodle::Result<()> {
     match backend {
         noodle::Backend::Wgpu => {
             let device = WgpuDevice::default();

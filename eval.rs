@@ -133,7 +133,10 @@ fn eval_loop<B: Backend>(
     eprintln!("  Loss: {:.4}", avg_loss);
     eprintln!("  Perplexity: {:.2}", perplexity);
     eprintln!("  Tokens evaluated: {}", format_number(tokens_evaluated));
-    eprintln!("  Throughput: {} tokens/s", format_number(throughput as usize));
+    eprintln!(
+        "  Throughput: {} tokens/s",
+        format_number(throughput as usize)
+    );
 
     Ok(())
 }

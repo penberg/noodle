@@ -47,6 +47,7 @@ image = (
     .add_local_file("Cargo.toml", "/noodle/Cargo.toml", copy=True)
     .add_local_file("Cargo.lock", "/noodle/Cargo.lock", copy=True)
     .add_local_file("chat.rs", "/noodle/chat.rs", copy=True)
+    .add_local_file("eval.rs", "/noodle/eval.rs", copy=True)
     .add_local_file("inference.rs", "/noodle/inference.rs", copy=True)
     .add_local_file("lib.rs", "/noodle/lib.rs", copy=True)
     .add_local_file("main.rs", "/noodle/main.rs", copy=True)

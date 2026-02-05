@@ -1,14 +1,16 @@
 #![recursion_limit = "256"]
 
 pub mod eval;
+pub mod finetune;
 pub mod inference;
 pub mod model;
 pub mod tokenizer;
 pub mod train;
 
 pub use eval::eval;
+pub use finetune::finetune;
 pub use inference::generate_next_token;
-pub use tokenizer::{Token, Tokenize, decode};
+pub use tokenizer::{Token, Tokenizer};
 pub use train::train;
 
 #[derive(Clone, Copy, Debug, Default)]

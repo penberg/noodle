@@ -12,7 +12,7 @@ use serde_json;
 use crate::{
     Result,
     model::{ModelConfig, Trainer},
-    tokenizer::Tokenize,
+    tokenizer::Tokenizer,
 };
 
 // Canonical Noodle model hyperparameters (sized for small datasets ~300K-1M tokens)
@@ -60,7 +60,8 @@ pub fn train(
     std::fs::write(&config_path, config_json)?;
     eprintln!("Saved config to {}", config_path.display());
 
-    let tokens = input.tokenize()?;
+    let tokenizer = Tokenizer::new()?;
+    let tokens = tokenizer.encode_file(input)?;
     eprintln!("Loaded {} tokens", tokens.len());
 
     match backend {
@@ -342,7 +343,8 @@ fn train_loop<B: AutodiffBackend>(
     // Test generation with final model state (note: best model already saved)
     eprintln!("Testing generation...");
     let test_prompt = "Once upon a time";
-    let prompt_tokens = test_prompt.tokenize()?;
+    let tokenizer = Tokenizer::new()?;
+    let prompt_tokens = tokenizer.encode(test_prompt);
     let inner_model = trainer.model.clone().valid();
     let mut rng = rand::thread_rng();
     let config = crate::inference::SamplingConfig::default();
@@ -352,7 +354,7 @@ fn train_loop<B: AutodiffBackend>(
         let next = crate::generate_next_token(&inner_model, &tokens, &config, &device, &mut rng);
         tokens.push(next);
     }
-    let generated = crate::decode(&tokens)?;
+    let generated = tokenizer.decode(&tokens)?;
     eprintln!("Test: \"{}\" -> \"{}\"", test_prompt, generated);
     eprintln!(
         "Training complete. Best model saved to {}",

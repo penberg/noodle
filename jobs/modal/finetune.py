@@ -1,25 +1,25 @@
 """
-Modal app for training Noodle on cloud GPUs.
+Modal app for fine-tuning Noodle on instruction data with cloud GPUs.
 
 Usage:
-    # Upload training corpus
-    modal volume put noodle-data corpus/tinystories-train.txt /corpus/
+    # Prepare data locally
+    uv run scripts/prepare_dolly.py
 
-    # Run training
-    modal run jobs/modal/train.py --corpus-file /data/corpus/tinystories-train.txt --max-epochs 20
+    # Upload corpus (base model should already be on volume from pretraining)
+    modal volume put noodle-data corpus/dolly.txt /corpus/
 
-    # List volume contents
-    modal run jobs/modal/train.py::list_volume
+    # Run fine-tuning
+    modal run jobs/modal/finetune.py --corpus-file /data/corpus/dolly.txt --max-epochs 3
 
-    # Download trained model
-    modal volume get noodle-data /models/noodle ./models/noodle
+    # Download fine-tuned model
+    modal volume get noodle-data /models/noodle-sft ./models/noodle-sft
 """
 
 import modal
 
 VOLUME_NAME = "noodle-data"
 
-app = modal.App("noodle-train")
+app = modal.App("noodle-finetune")
 
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
@@ -69,14 +69,23 @@ image = (
     volumes={"/data": volume},
     timeout=86400,  # 24 hours max
 )
-def train_noodle(
+def finetune_noodle(
     corpus_file: str,
-    model_dir: str = "/data/models/noodle",
-    max_epochs: int = 10,
+    base_model_dir: str = "/data/models/noodle",
+    output_dir: str = "/data/models/noodle-sft",
+    max_epochs: int = 5,
 ):
-    """Train Noodle on Modal GPU."""
+    """Fine-tune Noodle on instruction data using Modal GPU."""
     import subprocess
     import os
+
+    # Find the base model file
+    base_model_path = os.path.join(base_model_dir, "model.mpk")
+    if not os.path.exists(base_model_path):
+        raise FileNotFoundError(
+            f"Base model not found: {base_model_path}\n"
+            f"Train a base model first, or check the --base-model-dir path."
+        )
 
     # Verify corpus exists
     if not os.path.exists(corpus_file):
@@ -85,15 +94,16 @@ def train_noodle(
             f"Upload with: modal volume put {VOLUME_NAME} <local-file> /corpus/"
         )
 
-    # Ensure model directory exists
-    os.makedirs(model_dir, exist_ok=True)
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Build the training command
+    # Build the fine-tuning command
     cmd = [
         "/noodle/target/release/noodle",
-        "train",
+        "finetune",
+        base_model_path,
         corpus_file,
-        model_dir,
+        output_dir,
         "--backend",
         "cuda",
         "--max-epochs",
@@ -101,12 +111,13 @@ def train_noodle(
     ]
 
     print(f"Running: {' '.join(cmd)}")
+    print(f"Base model: {base_model_path}")
     print(f"Corpus: {corpus_file}")
-    print(f"Model dir: {model_dir}")
+    print(f"Output dir: {output_dir}")
     print(f"Max epochs: {max_epochs}")
     print("-" * 60)
 
-    # Run training
+    # Run fine-tuning
     env = os.environ.copy()
     env["HOME"] = "/root"
     env["XDG_RUNTIME_DIR"] = "/tmp/runtime"
@@ -125,54 +136,32 @@ def train_noodle(
     volume.commit()
 
     if result.returncode != 0:
-        raise RuntimeError(f"Training failed with return code {result.returncode}")
+        raise RuntimeError(f"Fine-tuning failed with return code {result.returncode}")
 
     print("-" * 60)
-    print("Training complete!")
-    print(f"Model saved to: {model_dir}")
-    print(f"Download with: modal volume get {VOLUME_NAME} /models/noodle ./models/noodle")
-
-
-@app.function(image=modal.Image.debian_slim(), volumes={"/data": volume})
-def list_volume(path: str = "/data"):
-    """List contents of the noodle-data volume."""
-    import os
-
-    print(f"Contents of {path}:")
-    print("-" * 40)
-
-    for root, dirs, files in os.walk(path):
-        level = root.replace(path, "").count(os.sep)
-        indent = "  " * level
-        print(f"{indent}{os.path.basename(root)}/")
-        sub_indent = "  " * (level + 1)
-        for file in files:
-            filepath = os.path.join(root, file)
-            size = os.path.getsize(filepath)
-            if size > 1024 * 1024:
-                size_str = f"{size / (1024 * 1024):.1f}MB"
-            elif size > 1024:
-                size_str = f"{size / 1024:.1f}KB"
-            else:
-                size_str = f"{size}B"
-            print(f"{sub_indent}{file} ({size_str})")
+    print("Fine-tuning complete!")
+    print(f"Model saved to: {output_dir}")
+    print(f"Download with: modal volume get {VOLUME_NAME} /models/noodle-sft ./models/noodle-sft")
 
 
 @app.local_entrypoint()
 def main(
     corpus_file: str,
-    model_dir: str = "/data/models/noodle",
-    max_epochs: int = 10,
+    base_model_dir: str = "/data/models/noodle",
+    output_dir: str = "/data/models/noodle-sft",
+    max_epochs: int = 5,
 ):
-    """Train Noodle on Modal GPU.
+    """Fine-tune Noodle on instruction data using Modal GPU.
 
     Args:
-        corpus_file: Path to corpus file in the volume (e.g., /data/corpus/tinystories-train.txt)
-        model_dir: Directory to save model in the volume (default: /data/models/noodle)
-        max_epochs: Maximum training epochs (default: 10)
+        corpus_file: Path to instruction corpus in the volume (e.g., /data/corpus/dolly.txt)
+        base_model_dir: Directory with pre-trained base model (default: /data/models/noodle)
+        output_dir: Directory to save fine-tuned model (default: /data/models/noodle-sft)
+        max_epochs: Maximum fine-tuning epochs (default: 5)
     """
-    train_noodle.remote(
+    finetune_noodle.remote(
         corpus_file=corpus_file,
-        model_dir=model_dir,
+        base_model_dir=base_model_dir,
+        output_dir=output_dir,
         max_epochs=max_epochs,
     )

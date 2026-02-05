@@ -348,6 +348,21 @@ impl<B: AutodiffBackend> Trainer<B> {
         }
     }
 
+    pub fn from_model(model: Model<B>, config: ModelConfig, device: &B::Device) -> Self {
+        let _ = device;
+        eprintln!("  creating optimizer for fine-tuning...");
+        let optimizer = AdamWConfig::new()
+            .with_weight_decay(0.1)
+            .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
+            .init();
+
+        Self {
+            model,
+            optimizer,
+            config,
+        }
+    }
+
     pub fn ctx_len(&self) -> usize {
         self.config.ctx_len
     }

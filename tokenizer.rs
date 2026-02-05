@@ -17,11 +17,7 @@ pub trait Tokenize {
 impl Tokenize for str {
     fn tokenize(&self) -> Result<Vec<Token>> {
         let bpe = p50k_base().map_err(|e| crate::Error::Tokenizer(e.to_string()))?;
-        let tokens = bpe
-            .encode_with_special_tokens(self)
-            .into_iter()
-            .map(|t| t as u32)
-            .collect();
+        let tokens = bpe.encode_with_special_tokens(self).into_iter().collect();
         Ok(tokens)
     }
 }
@@ -37,11 +33,8 @@ impl Tokenize for Path {
 
         for line in reader.lines() {
             let line = line?;
-            let line_tokens: Vec<Token> = bpe
-                .encode_with_special_tokens(&line)
-                .into_iter()
-                .map(|t| t as u32)
-                .collect();
+            let line_tokens: Vec<Token> =
+                bpe.encode_with_special_tokens(&line).into_iter().collect();
             tokens.extend(line_tokens);
 
             lines_processed += 1;

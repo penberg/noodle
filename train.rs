@@ -28,8 +28,10 @@ const LOG_INTERVAL: usize = 10;
 const BASE_LEARNING_RATE: f64 = 1e-4;
 const BASE_BATCH_SIZE: usize = 4; // LR is scaled linearly relative to this
 
-// Early stopping: stop if validation loss doesn't improve by MIN_IMPROVEMENT for PATIENCE epochs
-const PATIENCE: usize = 5;
+// Step-based evaluation: validate every EVAL_INTERVAL training steps
+const EVAL_INTERVAL: usize = 200;
+// Early stopping: stop if validation loss doesn't improve by MIN_IMPROVEMENT for PATIENCE evals
+const PATIENCE: usize = 10;
 const MIN_IMPROVEMENT: f32 = 0.01;
 
 // Train/validation split ratio (90% train, 10% validation)
@@ -149,13 +151,16 @@ fn train_loop<B: AutodiffBackend>(
         )));
     }
 
+    // Clamp eval_interval for tiny datasets: degrade gracefully to once-per-epoch
+    let eval_interval = EVAL_INTERVAL.min(num_train_batches);
+
     eprintln!(
         "Training: {} train batches, {} val batches ({} sequences x {} tokens)",
         num_train_batches, num_val_batches, BATCH_SIZE, ctx_len
     );
     eprintln!(
-        "Early stopping: patience={}, min_improvement={} (based on val loss)",
-        PATIENCE, MIN_IMPROVEMENT
+        "Eval every {} steps, early stopping: patience={}, min_improvement={} (based on val loss)",
+        eval_interval, PATIENCE, MIN_IMPROVEMENT
     );
 
     // Pre-convert all tokens to i32 for easier batching
@@ -164,7 +169,10 @@ fn train_loop<B: AutodiffBackend>(
 
     // Early stopping state
     let mut best_loss = f32::MAX;
-    let mut epochs_without_improvement = 0;
+    let mut evals_without_improvement = 0;
+    let mut global_step: usize = 0;
+    let mut stopped_early = false;
+    let model_path = output.join("model.mpk");
 
     for epoch in 0..max_epochs {
         eprintln!("Epoch {} starting...", epoch + 1);
@@ -172,6 +180,7 @@ fn train_loop<B: AutodiffBackend>(
         let mut total_train_loss = 0.0;
         let mut interval_loss = 0.0;
         let mut interval_count = 0;
+        let mut last_eval_step = global_step;
 
         // Training loop
         for batch_idx in 0..num_train_batches {
@@ -180,9 +189,6 @@ fn train_loop<B: AutodiffBackend>(
             }
 
             // Build batch tensors using consecutive non-overlapping chunks (like nanochat)
-            // Batch layout: we take tokens_per_batch + 1 tokens starting at batch_idx * tokens_per_batch
-            // Then reshape: inputs = tokens[0:tokens_per_batch].view(BATCH_SIZE, ctx_len)
-            //               targets = tokens[1:tokens_per_batch+1].view(BATCH_SIZE, ctx_len)
             let batch_start = batch_idx * tokens_per_batch;
 
             let mut input_data = Vec::with_capacity(tokens_per_batch);
@@ -202,6 +208,7 @@ fn train_loop<B: AutodiffBackend>(
             total_train_loss += loss;
             interval_loss += loss;
             interval_count += 1;
+            global_step += 1;
 
             // Log first 3 batches to estimate speed
             if batch_idx < 3 {
@@ -231,62 +238,103 @@ fn train_loop<B: AutodiffBackend>(
                 interval_loss = 0.0;
                 interval_count = 0;
             }
+
+            // Step-based evaluation
+            if global_step.is_multiple_of(eval_interval) {
+                last_eval_step = global_step;
+                let avg_val_loss = validate(
+                    &trainer,
+                    &val_token_ids,
+                    num_val_batches,
+                    tokens_per_batch,
+                    ctx_len,
+                    &device,
+                );
+
+                let improved = best_loss - avg_val_loss > MIN_IMPROVEMENT;
+                if improved {
+                    best_loss = avg_val_loss;
+                    evals_without_improvement = 0;
+                    trainer.save(&model_path)?;
+                    eprintln!(
+                        "  [step {}] val_loss = {:.4} (new best), saved model",
+                        global_step, avg_val_loss
+                    );
+                } else {
+                    evals_without_improvement += 1;
+                    eprintln!(
+                        "  [step {}] val_loss = {:.4}, best_val = {:.4}, patience = {}/{}",
+                        global_step,
+                        avg_val_loss,
+                        best_loss,
+                        PATIENCE - evals_without_improvement,
+                        PATIENCE
+                    );
+                }
+
+                if evals_without_improvement >= PATIENCE {
+                    eprintln!(
+                        "Early stopping at step {}: no improvement for {} evals",
+                        global_step, PATIENCE
+                    );
+                    stopped_early = true;
+                    break;
+                }
+            }
+        }
+
+        if stopped_early {
+            break;
         }
 
         let avg_train_loss = total_train_loss / num_train_batches as f32;
 
-        // Validation loop (no gradients)
-        let mut total_val_loss = 0.0;
-        for batch_idx in 0..num_val_batches {
-            let batch_start = batch_idx * tokens_per_batch;
+        // Force validation at epoch boundary if last batch didn't already trigger one
+        let avg_val_loss = if last_eval_step == global_step {
+            // Already ran validation on the last step of this epoch
+            best_loss // Use best_loss for display; actual val was already logged
+        } else {
+            let val_loss = validate(
+                &trainer,
+                &val_token_ids,
+                num_val_batches,
+                tokens_per_batch,
+                ctx_len,
+                &device,
+            );
 
-            let mut input_data = Vec::with_capacity(tokens_per_batch);
-            let mut target_data = Vec::with_capacity(tokens_per_batch);
-
-            for i in 0..tokens_per_batch {
-                input_data.push(val_token_ids[batch_start + i]);
-                target_data.push(val_token_ids[batch_start + i + 1]);
+            let improved = best_loss - val_loss > MIN_IMPROVEMENT;
+            if improved {
+                best_loss = val_loss;
+                evals_without_improvement = 0;
+                trainer.save(&model_path)?;
+                eprintln!("  saved best model to {}", model_path.display());
+            } else {
+                evals_without_improvement += 1;
             }
 
-            let input: Tensor<B, 2, Int> =
-                Tensor::from_data(TensorData::new(input_data, [BATCH_SIZE, ctx_len]), &device);
-            let target: Tensor<B, 2, Int> =
-                Tensor::from_data(TensorData::new(target_data, [BATCH_SIZE, ctx_len]), &device);
-
-            let loss = trainer.eval_step(input, target, &device);
-            total_val_loss += loss;
-        }
-        let avg_val_loss = total_val_loss / num_val_batches as f32;
+            val_loss
+        };
 
         let elapsed = epoch_start.elapsed();
-
-        // Check for improvement (based on validation loss)
-        let improved = best_loss - avg_val_loss > MIN_IMPROVEMENT;
-        let model_path = output.join("model.mpk");
-        if improved {
-            best_loss = avg_val_loss;
-            epochs_without_improvement = 0;
-            // Save best model
-            trainer.save(&model_path)?;
-            eprintln!("  saved best model to {}", model_path.display());
-        } else {
-            epochs_without_improvement += 1;
-        }
-
         eprintln!(
             "Epoch {}: train_loss = {:.4}, val_loss = {:.4}, best_val = {:.4}, patience = {}/{}, time = {:.1}s",
             epoch + 1,
             avg_train_loss,
             avg_val_loss,
             best_loss,
-            PATIENCE - epochs_without_improvement,
+            PATIENCE - evals_without_improvement,
             PATIENCE,
             elapsed.as_secs_f32()
         );
 
-        // Early stopping check
-        if epochs_without_improvement >= PATIENCE {
-            eprintln!("Early stopping: no improvement for {} epochs", PATIENCE);
+        // Early stopping check at epoch boundary
+        if evals_without_improvement >= PATIENCE {
+            eprintln!(
+                "Early stopping at epoch {}: no improvement for {} evals",
+                epoch + 1,
+                PATIENCE
+            );
             break;
         }
     }
@@ -312,6 +360,37 @@ fn train_loop<B: AutodiffBackend>(
     );
 
     Ok(())
+}
+
+fn validate<B: AutodiffBackend>(
+    trainer: &Trainer<B>,
+    val_token_ids: &[i32],
+    num_val_batches: usize,
+    tokens_per_batch: usize,
+    ctx_len: usize,
+    device: &B::Device,
+) -> f32 {
+    let mut total_val_loss = 0.0;
+    for batch_idx in 0..num_val_batches {
+        let batch_start = batch_idx * tokens_per_batch;
+
+        let mut input_data = Vec::with_capacity(tokens_per_batch);
+        let mut target_data = Vec::with_capacity(tokens_per_batch);
+
+        for i in 0..tokens_per_batch {
+            input_data.push(val_token_ids[batch_start + i]);
+            target_data.push(val_token_ids[batch_start + i + 1]);
+        }
+
+        let input: Tensor<B, 2, Int> =
+            Tensor::from_data(TensorData::new(input_data, [BATCH_SIZE, ctx_len]), device);
+        let target: Tensor<B, 2, Int> =
+            Tensor::from_data(TensorData::new(target_data, [BATCH_SIZE, ctx_len]), device);
+
+        let loss = trainer.eval_step(input, target, device);
+        total_val_loss += loss;
+    }
+    total_val_loss / num_val_batches as f32
 }
 
 fn log_gpu_adapters() {

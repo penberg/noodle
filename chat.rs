@@ -50,6 +50,8 @@ fn chat_loop<B: Backend>(model_path: &Path, device: B::Device) -> noodle::Result
     let config = SamplingConfig::default();
     let max_tokens = 100;
 
+    let mut history: Vec<noodle::Token> = Vec::new();
+
     loop {
         print!("> ");
         stdout.flush()?;
@@ -59,18 +61,19 @@ fn chat_loop<B: Backend>(model_path: &Path, device: B::Device) -> noodle::Result
             break; // EOF
         }
 
-        let mut tokens = tokenizer.encode(input.trim());
+        let input_tokens = tokenizer.encode(input.trim());
+        history.extend_from_slice(&input_tokens);
 
         // Generate tokens one at a time, streaming output
         for _ in 0..max_tokens {
             let next_token =
-                noodle::generate_next_token(&model, &tokens, &config, &device, &mut rng);
+                noodle::generate_next_token(&model, &history, &config, &device, &mut rng);
 
             if next_token == EOS_TOKEN {
                 break;
             }
 
-            tokens.push(next_token);
+            history.push(next_token);
 
             // Decode and print just this token
             let token_text = tokenizer.decode(&[next_token])?;

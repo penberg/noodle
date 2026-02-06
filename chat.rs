@@ -7,9 +7,11 @@ use burn::backend::wgpu::WgpuDevice;
 use burn::backend::{Cuda, NdArray, Wgpu};
 use burn::prelude::Backend;
 
-use noodle::Tokenize;
+use noodle::Tokenizer;
 use noodle::inference::SamplingConfig;
 use noodle::model::Model;
+
+const EOS_TOKEN: noodle::Token = 50256;
 
 pub fn chat(model_path: &Path, backend: noodle::Backend) -> noodle::Result<()> {
     match backend {
@@ -33,6 +35,7 @@ pub fn chat(model_path: &Path, backend: noodle::Backend) -> noodle::Result<()> {
 
 fn chat_loop<B: Backend>(model_path: &Path, device: B::Device) -> noodle::Result<()> {
     let model = Model::<B>::load(model_path, &device)?;
+    let tokenizer = Tokenizer::new()?;
 
     println!();
     println!(" ~(°◡°)~  Noodle");
@@ -56,21 +59,23 @@ fn chat_loop<B: Backend>(model_path: &Path, device: B::Device) -> noodle::Result
             break; // EOF
         }
 
-        let mut tokens = input.trim().tokenize()?;
+        let mut tokens = tokenizer.encode(input.trim());
 
         // Generate tokens one at a time, streaming output
         for _ in 0..max_tokens {
             let next_token =
                 noodle::generate_next_token(&model, &tokens, &config, &device, &mut rng);
 
+            if next_token == EOS_TOKEN {
+                break;
+            }
+
             tokens.push(next_token);
 
             // Decode and print just this token
-            let token_text = noodle::decode(&[next_token])?;
+            let token_text = tokenizer.decode(&[next_token])?;
             print!("{}", token_text);
             stdout.flush()?;
-
-            // TODO: stop on EOS token
         }
         println!();
     }

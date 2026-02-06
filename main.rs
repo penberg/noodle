@@ -51,6 +51,26 @@ enum Cmd {
         backend: Backend,
     },
 
+    /// Fine-tune a pre-trained model on instruction data
+    Finetune {
+        /// Base model .mpk file path
+        model: PathBuf,
+
+        /// Input instruction text file
+        input: PathBuf,
+
+        /// Output directory for fine-tuned model
+        output: PathBuf,
+
+        /// Backend to use for training
+        #[arg(long, default_value = "gpu")]
+        backend: Backend,
+
+        /// Maximum number of fine-tuning epochs
+        #[arg(long, default_value = "5")]
+        max_epochs: usize,
+    },
+
     /// Chat with a trained model
     Chat {
         /// Model file
@@ -79,6 +99,21 @@ fn main() {
                 Backend::Cpu => noodle::Backend::Cpu,
             };
             noodle::train(&input, &output, backend, max_epochs).expect("training failed");
+        }
+        Cmd::Finetune {
+            model,
+            input,
+            output,
+            backend,
+            max_epochs,
+        } => {
+            let backend = match backend {
+                Backend::Gpu => noodle::Backend::Wgpu,
+                Backend::Cuda => noodle::Backend::Cuda,
+                Backend::Cpu => noodle::Backend::Cpu,
+            };
+            noodle::finetune(&model, &input, &output, backend, max_epochs)
+                .expect("fine-tuning failed");
         }
         Cmd::Eval {
             model,

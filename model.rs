@@ -348,6 +348,21 @@ impl<B: AutodiffBackend> Trainer<B> {
         }
     }
 
+    pub fn from_model(model: Model<B>, config: ModelConfig, device: &B::Device) -> Self {
+        let _ = device;
+        eprintln!("  creating optimizer for fine-tuning...");
+        let optimizer = AdamWConfig::new()
+            .with_weight_decay(0.1)
+            .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
+            .init();
+
+        Self {
+            model,
+            optimizer,
+            config,
+        }
+    }
+
     pub fn ctx_len(&self) -> usize {
         self.config.ctx_len
     }
@@ -380,6 +395,36 @@ impl<B: AutodiffBackend> Trainer<B> {
         loss_val
     }
 
+    /// Training step with masked loss: ignores positions where target == pad_id
+    pub fn train_step_masked(
+        &mut self,
+        input: Tensor<B, 2, Int>,
+        target: Tensor<B, 2, Int>,
+        lr: f64,
+        pad_id: usize,
+        device: &B::Device,
+    ) -> f32 {
+        let [batch, seq_len] = input.dims();
+
+        let logits = self.model.forward(input, device);
+
+        let logits = logits.reshape([batch * seq_len, self.config.vocab_size]);
+        let target = target.reshape([batch * seq_len]);
+
+        let loss = CrossEntropyLossConfig::new()
+            .with_pad_tokens(Some(vec![pad_id]))
+            .init(device)
+            .forward(logits, target);
+
+        let loss_val: f32 = loss.clone().into_scalar().elem();
+
+        let grads = loss.backward();
+        let grads = GradientsParams::from_grads(grads, &self.model);
+        self.model = self.optimizer.step(lr, self.model.clone(), grads);
+
+        loss_val
+    }
+
     /// Eval step: compute loss without gradients
     pub fn eval_step(
         &self,
@@ -395,6 +440,29 @@ impl<B: AutodiffBackend> Trainer<B> {
         let target = target.inner().reshape([batch * seq_len]);
 
         let loss = CrossEntropyLossConfig::new()
+            .init(device)
+            .forward(logits, target);
+
+        loss.into_scalar().elem()
+    }
+
+    /// Eval step with masked loss: ignores positions where target == pad_id
+    pub fn eval_step_masked(
+        &self,
+        input: Tensor<B, 2, Int>,
+        target: Tensor<B, 2, Int>,
+        pad_id: usize,
+        device: &B::Device,
+    ) -> f32 {
+        let [batch, seq_len] = input.dims();
+
+        let inner = self.model.clone().valid();
+        let logits = inner.forward(input.inner(), device);
+        let logits = logits.reshape([batch * seq_len, self.config.vocab_size]);
+        let target = target.inner().reshape([batch * seq_len]);
+
+        let loss = CrossEntropyLossConfig::new()
+            .with_pad_tokens(Some(vec![pad_id]))
             .init(device)
             .forward(logits, target);
 

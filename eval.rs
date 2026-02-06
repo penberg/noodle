@@ -10,7 +10,7 @@ use burn::{
 use crate::{
     Result,
     model::{Model, ModelConfig},
-    tokenizer::Tokenize,
+    tokenizer::Tokenizer,
 };
 
 const BATCH_SIZE: usize = 8;
@@ -25,7 +25,8 @@ pub fn eval(model_path: &Path, corpus_path: &Path, backend: crate::Backend) -> R
 
     eprintln!("Evaluating model on {}", corpus_path.display());
 
-    let tokens = corpus_path.tokenize()?;
+    let tokenizer = Tokenizer::new()?;
+    let tokens = tokenizer.encode_file(corpus_path)?;
     let num_tokens = tokens.len();
 
     let tokens_per_batch = BATCH_SIZE * ctx_len;

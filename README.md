@@ -16,6 +16,7 @@ Noodle is a minimal language model implementation written in Rust. It's designed
 
 - Transformer architecture with configurable layers and embedding dimensions
 - Training on custom text corpora
+- Fine-tuning on instruction data
 - Interactive chat interface for text generation
 - GPU acceleration support
 
@@ -112,7 +113,32 @@ I am ready to chat! Type your message and press Enter.
 , there was a little girl named Lily. She loved to design things with her crayons. One day, she wanted to design something new and pretty. So, she added some colors and shapes in it.Lily wanted to create something special for her mom. She put pretty colors on the paper and made a beautiful picture of a beautiful picture on the paper with many colors on it. When she finished drawing, they were very happy with their creative work - not just like Lily's painting!
 ```
 
-Note that the model is only pre-trained and, therefore, only performs text generation, and does not answer questions. For that, we need finetuning support.
+Note that the pre-trained model only performs text generation and does not follow instructions. To make the model follow instructions, you can fine-tune it on instruction data (see below).
+
+### Fine-tuning the model
+
+You can fine-tune a pre-trained model on instruction data to teach it to follow instructions:
+
+```console
+> cargo run --release -- finetune models/noodle/model.mpk corpus/instructions.txt models/noodle-finetuned --max-epochs 5
+```
+
+The fine-tuning command takes the following arguments:
+
+- `model` — Path to the pre-trained model `.mpk` file
+- `input` — Path to an instruction text file (training data)
+- `output` — Output directory for the fine-tuned model
+
+Optional flags:
+
+- `--backend` — Backend to use for training: `gpu` (default), `cuda`, or `cpu`
+- `--max-epochs` — Maximum number of fine-tuning epochs (default: `5`)
+
+The fine-tuned model is saved to the output directory and can be used with the `chat` command:
+
+```console
+> cargo run --release chat models/noodle-finetuned/model.mpk
+```
 
 ## License
 

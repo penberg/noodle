@@ -28,9 +28,13 @@ const LOG_INTERVAL: usize = 10;
 const BASE_LEARNING_RATE: f64 = 1e-4;
 const BASE_BATCH_SIZE: usize = 4; // LR is scaled linearly relative to this
 
-// Early stopping: stop if validation loss doesn't improve by MIN_IMPROVEMENT for PATIENCE epochs
+// Early stopping: stop if validation loss doesn't improve by MIN_IMPROVEMENT for PATIENCE checks
 const PATIENCE: usize = 5;
 const MIN_IMPROVEMENT: f32 = 0.01;
+
+// Intra-epoch validation: check every N training batches for early stopping within long epochs
+const VAL_CHECK_INTERVAL: usize = 5000;
+const VAL_CHECK_BATCHES: usize = 500; // max val batches per intra-epoch check (caps overhead)
 
 // Train/validation split ratio (90% train, 10% validation)
 const VAL_SPLIT: f32 = 0.1;
@@ -154,8 +158,8 @@ fn train_loop<B: AutodiffBackend>(
         num_train_batches, num_val_batches, BATCH_SIZE, ctx_len
     );
     eprintln!(
-        "Early stopping: patience={}, min_improvement={} (based on val loss)",
-        PATIENCE, MIN_IMPROVEMENT
+        "Early stopping: patience={}, min_improvement={}, val check every {} batches",
+        PATIENCE, MIN_IMPROVEMENT, VAL_CHECK_INTERVAL
     );
 
     // Pre-convert all tokens to i32 for easier batching
@@ -164,7 +168,9 @@ fn train_loop<B: AutodiffBackend>(
 
     // Early stopping state
     let mut best_loss = f32::MAX;
-    let mut epochs_without_improvement = 0;
+    let mut checks_without_improvement = 0;
+    let mut early_stop = false;
+    let val_check_batches = num_val_batches.min(VAL_CHECK_BATCHES);
 
     for epoch in 0..max_epochs {
         eprintln!("Epoch {} starting...", epoch + 1);
@@ -231,6 +237,56 @@ fn train_loop<B: AutodiffBackend>(
                 interval_loss = 0.0;
                 interval_count = 0;
             }
+
+            // Intra-epoch validation check for early stopping within long epochs
+            if (batch_idx + 1) % VAL_CHECK_INTERVAL == 0 {
+                let mut check_val_loss = 0.0;
+                for vb in 0..val_check_batches {
+                    let vb_start = vb * tokens_per_batch;
+                    let mut vi_data = Vec::with_capacity(tokens_per_batch);
+                    let mut vt_data = Vec::with_capacity(tokens_per_batch);
+                    for i in 0..tokens_per_batch {
+                        vi_data.push(val_token_ids[vb_start + i]);
+                        vt_data.push(val_token_ids[vb_start + i + 1]);
+                    }
+                    let vi: Tensor<B, 2, Int> =
+                        Tensor::from_data(TensorData::new(vi_data, [BATCH_SIZE, ctx_len]), &device);
+                    let vt: Tensor<B, 2, Int> =
+                        Tensor::from_data(TensorData::new(vt_data, [BATCH_SIZE, ctx_len]), &device);
+                    let loss = trainer.eval_step(vi, vt, &device);
+                    check_val_loss += loss;
+                }
+                let avg_val_loss = check_val_loss / val_check_batches as f32;
+
+                let improved = best_loss - avg_val_loss > MIN_IMPROVEMENT;
+                if improved {
+                    best_loss = avg_val_loss;
+                    checks_without_improvement = 0;
+                    let model_path = output.join("model.mpk");
+                    trainer.save(&model_path)?;
+                    eprintln!(
+                        "  val check @ batch {}: val_loss = {:.4} (improved, saved)",
+                        batch_idx + 1, avg_val_loss
+                    );
+                } else {
+                    checks_without_improvement += 1;
+                    eprintln!(
+                        "  val check @ batch {}: val_loss = {:.4}, best = {:.4}, patience = {}/{}",
+                        batch_idx + 1, avg_val_loss, best_loss,
+                        PATIENCE - checks_without_improvement, PATIENCE
+                    );
+                }
+
+                if checks_without_improvement >= PATIENCE {
+                    eprintln!("Early stopping: no improvement for {} consecutive checks", PATIENCE);
+                    early_stop = true;
+                    break;
+                }
+            }
+        }
+
+        if early_stop {
+            break;
         }
 
         let avg_train_loss = total_train_loss / num_train_batches as f32;
@@ -265,12 +321,12 @@ fn train_loop<B: AutodiffBackend>(
         let model_path = output.join("model.mpk");
         if improved {
             best_loss = avg_val_loss;
-            epochs_without_improvement = 0;
+            checks_without_improvement = 0;
             // Save best model
             trainer.save(&model_path)?;
             eprintln!("  saved best model to {}", model_path.display());
         } else {
-            epochs_without_improvement += 1;
+            checks_without_improvement += 1;
         }
 
         eprintln!(
@@ -279,14 +335,14 @@ fn train_loop<B: AutodiffBackend>(
             avg_train_loss,
             avg_val_loss,
             best_loss,
-            PATIENCE - epochs_without_improvement,
+            PATIENCE - checks_without_improvement,
             PATIENCE,
             elapsed.as_secs_f32()
         );
 
         // Early stopping check
-        if epochs_without_improvement >= PATIENCE {
-            eprintln!("Early stopping: no improvement for {} epochs", PATIENCE);
+        if checks_without_improvement >= PATIENCE {
+            eprintln!("Early stopping: no improvement for {} consecutive checks", PATIENCE);
             break;
         }
     }

@@ -15,10 +15,13 @@ use crate::{
     tokenizer::Tokenizer,
 };
 
-// Canonical Noodle model hyperparameters (sized for small datasets ~300K-1M tokens)
-const LAYERS: usize = 4;
-const D_MODEL: usize = 256;
-const HEADS: usize = 4;
+// Model layout is derived from depth (number of transformer layers), like nanochat:
+// d_model = depth * ASPECT_RATIO, heads = d_model / HEAD_DIM. With both constants at 64,
+// d_model is always a multiple of HEAD_DIM and d_head is even, as RoPE requires.
+// The default depth of 4 yields the canonical Noodle model (4 layers, d_model=256, 4 heads),
+// sized for small datasets ~300K-1M tokens.
+const ASPECT_RATIO: usize = 64;
+const HEAD_DIM: usize = 64;
 const CTX_LEN: usize = 256;
 const VOCAB_SIZE: usize = 50281; // p50k_base tokenizer
 
@@ -42,7 +45,10 @@ pub fn train(
     output: &Path,
     backend: crate::Backend,
     max_epochs: usize,
+    depth: usize,
 ) -> Result<()> {
+    assert!(depth > 0, "depth must be at least 1");
+
     #[cfg(debug_assertions)]
     eprintln!("Warning: running in debug mode, use --release for faster training");
 
@@ -53,7 +59,9 @@ pub fn train(
 
     // Create output directory and save config before training
     std::fs::create_dir_all(output)?;
-    let config = ModelConfig::new(LAYERS, D_MODEL, HEADS, CTX_LEN, VOCAB_SIZE);
+    let d_model = depth * ASPECT_RATIO;
+    let heads = d_model / HEAD_DIM;
+    let config = ModelConfig::new(depth, d_model, heads, CTX_LEN, VOCAB_SIZE);
     let config_path = output.join("model.json");
     let config_json =
         serde_json::to_string_pretty(&config).map_err(|e| crate::Error::Burn(e.to_string()))?;

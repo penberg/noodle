@@ -74,17 +74,32 @@ impl ModelConfig {
 #[derive(Module, Debug)]
 pub struct Model<B: Backend> {
     token_emb: Embedding<B>,
-    pos_emb: Embedding<B>,
     blocks: Vec<TransformerBlock<B>>,
     ln_f: LayerNorm<B>,
     output: Linear<B>,
     ctx_len: usize,
     vocab_size: usize,
+    d_head: usize,
 }
 
 impl<B: Backend> Model<B> {
     pub fn new(config: &ModelConfig, device: &B::Device) -> Self {
         eprintln!("  initializing...");
+
+        // Rotary position embeddings rotate the head dimension in pairs, so d_head must
+        // be even (and d_model must divide evenly into heads). Fail early with a clear
+        // message rather than panicking on a shape mismatch deep in the forward pass.
+        assert!(
+            config.d_model.is_multiple_of(config.heads),
+            "d_model ({}) must be divisible by heads ({})",
+            config.d_model,
+            config.heads,
+        );
+        let d_head = config.d_model / config.heads;
+        assert!(
+            d_head.is_multiple_of(2),
+            "d_head (d_model / heads = {d_head}) must be even for rotary position embeddings",
+        );
 
         eprintln!(
             "  creating token embeddings ({} x {})...",
@@ -95,13 +110,10 @@ impl<B: Backend> Model<B> {
             std: 0.02,
         };
         let token_emb = EmbeddingConfig::new(config.vocab_size, config.d_model)
-            .with_initializer(emb_init.clone())
-            .init(device);
-
-        eprintln!("  creating position embeddings...");
-        let pos_emb = EmbeddingConfig::new(config.ctx_len, config.d_model)
             .with_initializer(emb_init)
             .init(device);
+
+        eprintln!("  using rotary position embeddings (RoPE)");
 
         eprintln!("  creating {} transformer blocks...", config.layers);
         let mut blocks = Vec::with_capacity(config.layers);
@@ -123,12 +135,12 @@ impl<B: Backend> Model<B> {
 
         Self {
             token_emb,
-            pos_emb,
             blocks,
             ln_f,
             output,
             ctx_len: config.ctx_len,
             vocab_size: config.vocab_size,
+            d_head,
         }
     }
 
@@ -164,9 +176,10 @@ impl<B: Backend> Model<B> {
     pub fn forward(&self, token_ids: Tensor<B, 2, Int>, device: &B::Device) -> Tensor<B, 3> {
         let [_batch, seq_len] = token_ids.dims();
 
-        // Position IDs [1, seq_len]: 0, 1, 2, ..., seq_len-1
-        let pos_data: Vec<i32> = (0..seq_len as i32).collect();
-        let pos_ids = Tensor::from_data(TensorData::new(pos_data, [1, seq_len]), device);
+        // Rotary position embeddings: precompute the cos/sin tables once and share
+        // them across all blocks. Position information is injected by rotating Q and K
+        // inside attention rather than by adding an absolute position embedding here.
+        let (cos, sin) = rope_tables::<B>(seq_len, self.d_head, device);
 
         // Causal mask [1, 1, seq_len, seq_len]: 0 for attend, -1e9 for mask
         // triu_mask returns FALSE for upper triangle (future), TRUE for lower triangle (past/current)
@@ -180,18 +193,77 @@ impl<B: Backend> Model<B> {
         let mask = large_neg.mask_where(attn_mask, zeros);
         let mask = mask.reshape([1, 1, seq_len, seq_len]);
 
-        let tok_emb = self.token_emb.forward(token_ids);
-        let pos_emb = self.pos_emb.forward(pos_ids);
-
-        let mut x = tok_emb + pos_emb;
+        let mut x = self.token_emb.forward(token_ids);
 
         for block in &self.blocks {
-            x = block.forward(x, &mask);
+            x = block.forward(x, &mask, &cos, &sin);
         }
 
         let x = self.ln_f.forward(x);
         self.output.forward(x)
     }
+}
+
+/// Base frequency for rotary position embeddings (RoPE), following the original paper.
+const ROPE_BASE: f32 = 10_000.0;
+
+/// Precompute the RoPE cosine and sine tables for a given sequence length.
+///
+/// Rotary position embeddings encode absolute position by rotating pairs of dimensions
+/// in the Q and K vectors by an angle proportional to the position. Dimension pair `i`
+/// rotates at frequency `ROPE_BASE^(-2i/d_head)`, so low dimensions rotate slowly (coarse
+/// position) and high dimensions rotate quickly (fine position). Because the rotation is a
+/// linear map, the attention dot product `q·k` ends up depending only on the *relative*
+/// distance between the two positions — the property that makes RoPE generalize across
+/// sequence lengths without any learned position parameters.
+///
+/// Returns `(cos, sin)`, each of shape `[1, 1, seq_len, d_head]` so they broadcast over the
+/// `[batch, heads, seq_len, d_head]` Q/K tensors. This uses the "rotate-half" layout
+/// (as in LLaMA/GPT-NeoX): the frequency vector is duplicated so the first and second
+/// halves of `d_head` share angles, pairing dimension `i` with dimension `i + d_head/2`.
+fn rope_tables<B: Backend>(
+    seq_len: usize,
+    d_head: usize,
+    device: &B::Device,
+) -> (Tensor<B, 4>, Tensor<B, 4>) {
+    let half = d_head / 2;
+
+    // inv_freq[i] = ROPE_BASE^(-2i/d_head) for i in 0..half
+    let inv_freq: Vec<f32> = (0..half)
+        .map(|i| ROPE_BASE.powf(-(2.0 * i as f32) / d_head as f32))
+        .collect();
+    let inv_freq = Tensor::<B, 1>::from_data(TensorData::new(inv_freq, [half]), device);
+
+    let positions: Vec<f32> = (0..seq_len).map(|p| p as f32).collect();
+    let positions = Tensor::<B, 1>::from_data(TensorData::new(positions, [seq_len]), device);
+
+    // Outer product: freqs[p, i] = position p * inv_freq[i] -> [seq_len, half]
+    let freqs = positions.reshape([seq_len, 1]) * inv_freq.reshape([1, half]);
+
+    // Duplicate along the feature dim so angles line up with the rotate-half layout.
+    let emb = Tensor::cat(vec![freqs.clone(), freqs], 1); // [seq_len, d_head]
+
+    let cos = emb.clone().cos().reshape([1, 1, seq_len, d_head]);
+    let sin = emb.sin().reshape([1, 1, seq_len, d_head]);
+    (cos, sin)
+}
+
+/// Apply rotary position embeddings to a Q or K tensor of shape `[batch, heads, seq_len, d_head]`.
+///
+/// Implements `x_rotated = x * cos + rotate_half(x) * sin`, where `rotate_half` splits the
+/// last dimension into halves `[x1, x2]` and returns `[-x2, x1]`. This is the matrix form of
+/// rotating each `(x_i, x_{i+d_head/2})` pair by its position-dependent angle.
+fn apply_rope<B: Backend>(x: Tensor<B, 4>, cos: &Tensor<B, 4>, sin: &Tensor<B, 4>) -> Tensor<B, 4> {
+    let [batch, heads, seq_len, d_head] = x.dims();
+    let half = d_head / 2;
+
+    let x1 = x.clone().slice([0..batch, 0..heads, 0..seq_len, 0..half]);
+    let x2 = x
+        .clone()
+        .slice([0..batch, 0..heads, 0..seq_len, half..d_head]);
+    let rotated = Tensor::cat(vec![x2.neg(), x1], 3);
+
+    x * cos.clone() + rotated * sin.clone()
 }
 
 /// A single transformer block with multi-head self-attention and feed-forward network.
@@ -236,7 +308,16 @@ impl<B: Backend> TransformerBlock<B> {
     }
 
     /// Forward pass: [batch, seq_len, d_model] -> [batch, seq_len, d_model]
-    pub fn forward(&self, x: Tensor<B, 3>, mask: &Tensor<B, 4>) -> Tensor<B, 3> {
+    ///
+    /// `cos` and `sin` are the precomputed rotary embedding tables of shape
+    /// `[1, 1, seq_len, d_head]`, applied to Q and K to encode position.
+    pub fn forward(
+        &self,
+        x: Tensor<B, 3>,
+        mask: &Tensor<B, 4>,
+        cos: &Tensor<B, 4>,
+        sin: &Tensor<B, 4>,
+    ) -> Tensor<B, 3> {
         let [batch, seq_len, d_model] = x.dims();
 
         // Pre-norm + self-attention
@@ -264,6 +345,12 @@ impl<B: Backend> TransformerBlock<B> {
         // RMS norm: x / sqrt(mean(x^2) + eps), applied along last dim (d_head)
         let q = Self::rms_norm(q);
         let k = Self::rms_norm(k);
+
+        // Rotary position embeddings: rotate Q and K so their dot product depends on
+        // relative position. Applied after QK norm so the rotation acts on unit-scale
+        // vectors and only the phase (not magnitude) carries position information.
+        let q = apply_rope(q, cos, sin);
+        let k = apply_rope(k, cos, sin);
 
         let scale = (self.d_head as f32).sqrt();
         let k_t = k.swap_dims(2, 3);

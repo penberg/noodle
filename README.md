@@ -5,20 +5,12 @@
 <h1 align="center">Noodle 🍜</h1>
 
 <p align="center">
- A small language model. 
+An on-device, GPU-accelerated language model in Rust. 
 </p>
 
 ## Introduction
 
-Noodle is a minimal language model implementation written in Rust. It's designed to be simple, educational, and easy to understand — a from-scratch implementation of a transformer-based language model that you can train on your own data.
-
-**Features:**
-
-- Transformer architecture with configurable layers and embedding dimensions
-- Training on custom text corpora
-- Fine-tuning on instruction data
-- Interactive chat interface for text generation
-- GPU acceleration support
+Noodle is a language model implemented from scratch in Rust. It's a decoder-only transformer with a complete pipeline — training, fine-tuning on instruction data, evaluation, and an interactive inference runtime — plus cloud-GPU training jobs on Modal. No PyTorch and no Python model code: the entire stack is Rust, with GPU acceleration.
 
 ## Getting Started
 

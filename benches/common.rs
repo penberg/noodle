@@ -23,14 +23,13 @@ use noodle::model::ModelConfig;
 /// practice.
 pub use noodle::Backend as BenchBackend;
 
-/// Model hyperparameters used by the benchmarks.
+/// Context length and vocabulary of the benchmarked model, spelled out as consts
+/// because the benchmarks size their inputs from them.
 ///
-/// These match the canonical Noodle model in `train.rs` (4 layers, d_model=256,
-/// 4 heads, 256-token context, p50k_base vocabulary) so the measurements reflect
-/// the shapes the real training and inference paths actually run.
-pub const LAYERS: usize = 4;
-pub const D_MODEL: usize = 256;
-pub const HEADS: usize = 4;
+/// They match the Sōmen preset (the default model `train.rs` builds: 4 layers,
+/// emb_dim=256, 4 heads, 256-token context, p50k_base vocabulary), so the
+/// measurements reflect the shapes the real training and inference paths run;
+/// `bench_config` asserts they stay in sync.
 pub const CTX_LEN: usize = 256;
 pub const VOCAB_SIZE: usize = 50281;
 
@@ -38,7 +37,10 @@ pub const VOCAB_SIZE: usize = 50281;
 pub const TRAIN_BATCH_SIZE: usize = 8;
 
 pub fn bench_config() -> ModelConfig {
-    ModelConfig::new(LAYERS, D_MODEL, HEADS, CTX_LEN, VOCAB_SIZE)
+    let config = ModelConfig::somen();
+    assert_eq!(config.ctx_len, CTX_LEN);
+    assert_eq!(config.vocab_size, VOCAB_SIZE);
+    config
 }
 
 /// Deterministic pseudo-random token ids in `[0, VOCAB_SIZE)`.

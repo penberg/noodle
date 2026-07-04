@@ -1,5 +1,6 @@
 use argh::FromArgs;
 use noodle::CorpusSource;
+use noodle::model::ModelConfig;
 use std::path::PathBuf;
 
 fn parse_corpus(value: &str) -> Result<CorpusSource, String> {
@@ -66,6 +67,45 @@ pub struct TrainCmd {
     /// maximum number of training epochs
     #[argh(option, default = "1000")]
     pub max_epochs: usize,
+
+    /// model preset: somen (~29M smoke test), soba (~0.6B), udon (~27B)
+    #[argh(option, default = "ModelPreset::Somen")]
+    pub model: ModelPreset,
+}
+
+/// Named model architecture presets, ordered by noodle width: Sōmen, the thinnest
+/// and quickest to cook, through Soba to Udon, the thick target model. A preset
+/// selects a [`ModelConfig`] at the CLI (lowercase ASCII values: `somen`, `soba`,
+/// `udon`); the model directory's `model.json` records the actual architecture
+/// numbers, with the preset name stored alongside them purely as information.
+#[derive(Clone, Copy, Debug)]
+pub enum ModelPreset {
+    Somen,
+    Soba,
+    Udon,
+}
+
+impl argh::FromArgValue for ModelPreset {
+    fn from_arg_value(value: &str) -> Result<Self, String> {
+        match value {
+            "somen" => Ok(Self::Somen),
+            "soba" => Ok(Self::Soba),
+            "udon" => Ok(Self::Udon),
+            _ => Err(format!(
+                "unknown model preset '{value}' (expected somen, soba, or udon)"
+            )),
+        }
+    }
+}
+
+impl From<ModelPreset> for ModelConfig {
+    fn from(preset: ModelPreset) -> Self {
+        match preset {
+            ModelPreset::Somen => ModelConfig::somen(),
+            ModelPreset::Soba => ModelConfig::soba(),
+            ModelPreset::Udon => ModelConfig::udon(),
+        }
+    }
 }
 
 /// Evaluate model perplexity on a test corpus

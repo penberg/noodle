@@ -76,6 +76,7 @@ def train_noodle(
     corpus: str,
     model_dir: str = "/data/models/noodle",
     max_epochs: int = 10,
+    model: str = "somen",
 ):
     """Train Noodle on Modal GPU."""
     import subprocess
@@ -103,12 +104,15 @@ def train_noodle(
         "cuda",
         "--max-epochs",
         str(max_epochs),
+        "--model",
+        model,
     ]
 
     print(f"Running: {' '.join(cmd)}")
     print(f"Corpus: {corpus}")
     print(f"Model dir: {model_dir}")
     print(f"Max epochs: {max_epochs}")
+    print(f"Model preset: {model}")
     print("-" * 60)
 
     # Run training
@@ -168,6 +172,7 @@ def main(
     corpus: str = "hf://roneneldan/TinyStories/TinyStoriesV2-GPT4-train.txt",
     model_dir: str = "/data/models/noodle",
     max_epochs: int = 10,
+    model: str = "somen",
 ):
     """Train Noodle on Modal GPU.
 
@@ -178,9 +183,12 @@ def main(
             TinyStories from HuggingFace.
         model_dir: Directory to save model in the volume (default: /data/models/noodle)
         max_epochs: Maximum training epochs (default: 10)
+        model: Model preset: somen (~29M smoke test), soba (~0.6B), or udon (~27B)
+            (default: somen)
     """
     train_noodle.remote(
         corpus=corpus,
         model_dir=model_dir,
         max_epochs=max_epochs,
+        model=model,
     )

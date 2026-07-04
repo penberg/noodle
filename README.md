@@ -12,6 +12,20 @@ An on-device, GPU-accelerated language model in Rust.
 
 Noodle is a language model implemented from scratch in Rust. It's a decoder-only transformer with a complete pipeline — training, fine-tuning on instruction data, evaluation, and an interactive inference runtime — plus cloud-GPU training jobs on Modal. No PyTorch and no Python model code: the entire stack is Rust, with GPU acceleration.
 
+Noodle comes in three sizes, named after noodles ordered by width and selected at
+training time with `--model`:
+
+| preset | size | |
+|---|---|---|
+| **Sōmen** (`--model somen`) | ~29M | The thinnest noodle, cooked in about ninety seconds: a smoke-test model for verifying the pipeline quickly, and the default. Not a real model. |
+| **Soba** (`--model soba`) | ~0.6B | The everyday noodle, for real training runs while iterating. Mirrors the shape of Qwen3-0.6B. |
+| **Udon** (`--model udon`) | ~27B | The thick noodle: the target model, in a Llama-33B-class shape. |
+
+The preset only picks the architecture — number of layers, embedding width, attention
+heads, and so on. The model directory's `model.json` records those actual numbers
+(with the preset name alongside as information), so a trained model is self-describing
+and inference never needs the preset.
+
 ## Getting Started
 
 ### Training the model
@@ -102,7 +116,7 @@ When you have a trained model, you can use it for inference:
 ```console
 > cargo run --release chat models/noodle/model.mpk
 Using GPU device: DefaultDevice
-Loading model: 4 layers, d_model=256
+Loading model: 4 layers, emb_dim=256
   initializing...
   creating token embeddings (50281 x 256)...
   using rotary position embeddings (RoPE)
@@ -172,7 +186,7 @@ full optimizer step — forward, loss, backward, AdamW update — alongside the 
 validation step, so the cost of the backward pass and the optimizer update is visible by
 comparison.
 
-Every benchmark uses the canonical Noodle hyperparameters (4 layers, `d_model=256`,
+Every benchmark uses the Sōmen preset, the default model (4 layers, `emb_dim=256`,
 4 heads, p50k_base vocabulary) on randomly initialized weights, and runs at a full
 256-token context with the batch size its caller uses: 1 for inference, 8 for training.
 

@@ -21,30 +21,121 @@ use crate::Result;
 
 const DROPOUT_RATE: f64 = 0.1;
 
+/// Vocabulary size of the p50k_base tokenizer, which every preset shares.
+const P50K_VOCAB_SIZE: usize = 50281;
+
 /// Configuration for the decoder-only transformer model architecture.
+///
+/// Field names follow the conventions of open-weight model configs (Qwen, Llama):
+/// `n_layers`, `emb_dim`, `n_heads`, `head_dim`, `hidden_dim`. The named presets
+/// ([`somen`](Self::somen), [`soba`](Self::soba), [`udon`](Self::udon)) record
+/// their name in a saved `model.json` purely as information — loading derives
+/// everything from the architecture numbers, so checkpoints stay self-describing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "ModelConfigCompat")]
 pub struct ModelConfig {
-    pub layers: usize,
-    pub d_model: usize,
-    pub heads: usize,
+    /// Which preset built this config, if any. Purely informative: nothing is
+    /// derived from it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    pub n_layers: usize,
+    pub emb_dim: usize,
+    pub n_heads: usize,
+    /// Width of each attention head, decoupled from `emb_dim / n_heads` (as in
+    /// Qwen3): attention runs at `n_heads * head_dim` wide and projects back to
+    /// `emb_dim`. Must be even for rotary position embeddings.
+    pub head_dim: usize,
+    /// Intermediate width of the feed-forward network.
+    pub hidden_dim: usize,
     pub ctx_len: usize,
     pub vocab_size: usize,
 }
 
-impl ModelConfig {
-    pub fn new(
-        layers: usize,
-        d_model: usize,
-        heads: usize,
-        ctx_len: usize,
-        vocab_size: usize,
-    ) -> Self {
+/// Accepts both the current field names and the ones older checkpoints were saved
+/// with (`layers`/`d_model`/`heads`, with no `head_dim` or `hidden_dim`), so
+/// existing `model.json` files keep loading.
+#[derive(Deserialize)]
+struct ModelConfigCompat {
+    #[serde(default)]
+    preset: Option<String>,
+    #[serde(alias = "layers")]
+    n_layers: usize,
+    #[serde(alias = "d_model")]
+    emb_dim: usize,
+    #[serde(alias = "heads")]
+    n_heads: usize,
+    head_dim: Option<usize>,
+    hidden_dim: Option<usize>,
+    ctx_len: usize,
+    vocab_size: usize,
+}
+
+impl From<ModelConfigCompat> for ModelConfig {
+    fn from(c: ModelConfigCompat) -> Self {
+        // Older configs predate the decoupled head width and configurable FFN
+        // width; they were built with head_dim = emb_dim / n_heads and
+        // hidden_dim = 4 * emb_dim.
         Self {
-            layers,
-            d_model,
-            heads,
-            ctx_len,
-            vocab_size,
+            preset: c.preset,
+            n_layers: c.n_layers,
+            emb_dim: c.emb_dim,
+            n_heads: c.n_heads,
+            head_dim: c.head_dim.unwrap_or(c.emb_dim / c.n_heads),
+            hidden_dim: c.hidden_dim.unwrap_or(4 * c.emb_dim),
+            ctx_len: c.ctx_len,
+            vocab_size: c.vocab_size,
+        }
+    }
+}
+
+impl ModelConfig {
+    /// Sōmen (~29M parameters): the thinnest noodle, cooked in about ninety
+    /// seconds. A smoke-test model for exercising the pipeline quickly, sized for
+    /// small datasets (~300K-1M tokens) — not a real model.
+    pub fn somen() -> Self {
+        Self {
+            preset: Some("Sōmen".to_string()),
+            n_layers: 4,
+            emb_dim: 256,
+            n_heads: 4,
+            head_dim: 64,
+            hidden_dim: 1024,
+            ctx_len: 256,
+            vocab_size: P50K_VOCAB_SIZE,
+        }
+    }
+
+    /// Soba (~0.6B parameters): the everyday noodle, for real training runs while
+    /// iterating. Mirrors Qwen3-0.6B's shape (28 layers, emb_dim 1024, 16 heads of
+    /// width 128), except hidden_dim is 4096 rather than Qwen3's 3072: our FFN is a
+    /// two-matrix GELU rather than their three-matrix SwiGLU, so it needs a wider
+    /// intermediate to spend the same parameter budget.
+    pub fn soba() -> Self {
+        Self {
+            preset: Some("Soba".to_string()),
+            n_layers: 28,
+            emb_dim: 1024,
+            n_heads: 16,
+            head_dim: 128,
+            hidden_dim: 4096,
+            ctx_len: 1024,
+            vocab_size: P50K_VOCAB_SIZE,
+        }
+    }
+
+    /// Udon (~27B parameters): the thick noodle — the target model, in a
+    /// Llama-33B-class shape. Training and running it locally still needs work the
+    /// config alone can't provide (bf16, grouped-query attention, checkpointing).
+    pub fn udon() -> Self {
+        Self {
+            preset: Some("Udon".to_string()),
+            n_layers: 50,
+            emb_dim: 6656,
+            n_heads: 52,
+            head_dim: 128,
+            hidden_dim: 26624,
+            ctx_len: 4096,
+            vocab_size: P50K_VOCAB_SIZE,
         }
     }
 
@@ -79,55 +170,49 @@ pub struct Model<B: Backend> {
     output: Linear<B>,
     ctx_len: usize,
     vocab_size: usize,
-    d_head: usize,
+    head_dim: usize,
 }
 
 impl<B: Backend> Model<B> {
     pub fn new(config: &ModelConfig, device: &B::Device) -> Self {
         eprintln!("  initializing...");
 
-        // Rotary position embeddings rotate the head dimension in pairs, so d_head must
-        // be even (and d_model must divide evenly into heads). Fail early with a clear
-        // message rather than panicking on a shape mismatch deep in the forward pass.
+        // Rotary position embeddings rotate the head dimension in pairs, so head_dim
+        // must be even. Fail early with a clear message rather than panicking on a
+        // shape mismatch deep in the forward pass.
         assert!(
-            config.d_model.is_multiple_of(config.heads),
-            "d_model ({}) must be divisible by heads ({})",
-            config.d_model,
-            config.heads,
-        );
-        let d_head = config.d_model / config.heads;
-        assert!(
-            d_head.is_multiple_of(2),
-            "d_head (d_model / heads = {d_head}) must be even for rotary position embeddings",
+            config.head_dim.is_multiple_of(2),
+            "head_dim ({}) must be even for rotary position embeddings",
+            config.head_dim,
         );
 
         eprintln!(
             "  creating token embeddings ({} x {})...",
-            config.vocab_size, config.d_model
+            config.vocab_size, config.emb_dim
         );
         let emb_init = Initializer::Normal {
             mean: 0.0,
             std: 0.02,
         };
-        let token_emb = EmbeddingConfig::new(config.vocab_size, config.d_model)
+        let token_emb = EmbeddingConfig::new(config.vocab_size, config.emb_dim)
             .with_initializer(emb_init)
             .init(device);
 
         eprintln!("  using rotary position embeddings (RoPE)");
 
-        eprintln!("  creating {} transformer blocks...", config.layers);
-        let mut blocks = Vec::with_capacity(config.layers);
-        for _ in 0..config.layers {
-            let block = TransformerBlock::new(config.d_model, config.heads, device);
+        eprintln!("  creating {} transformer blocks...", config.n_layers);
+        let mut blocks = Vec::with_capacity(config.n_layers);
+        for _ in 0..config.n_layers {
+            let block = TransformerBlock::new(config, device);
             blocks.push(block);
         }
 
         eprintln!("  creating final layer norm...");
-        let ln_f = LayerNormConfig::new(config.d_model).init(device);
+        let ln_f = LayerNormConfig::new(config.emb_dim).init(device);
 
         eprintln!("  creating output projection...");
         let init = Initializer::XavierUniform { gain: 1.0 };
-        let output = LinearConfig::new(config.d_model, config.vocab_size)
+        let output = LinearConfig::new(config.emb_dim, config.vocab_size)
             .with_initializer(init)
             .init(device);
 
@@ -140,17 +225,23 @@ impl<B: Backend> Model<B> {
             output,
             ctx_len: config.ctx_len,
             vocab_size: config.vocab_size,
-            d_head,
+            head_dim: config.head_dim,
         }
     }
 
     pub fn load(path: &Path, device: &B::Device) -> Result<Self> {
         let config = ModelConfig::load(path)?;
 
-        eprintln!(
-            "Loading model: {} layers, d_model={}",
-            config.layers, config.d_model
-        );
+        match &config.preset {
+            Some(name) => eprintln!(
+                "Loading model: {name} ({} layers, emb_dim={})",
+                config.n_layers, config.emb_dim
+            ),
+            None => eprintln!(
+                "Loading model: {} layers, emb_dim={}",
+                config.n_layers, config.emb_dim
+            ),
+        }
 
         let model = Self::new(&config, device);
 
@@ -179,7 +270,7 @@ impl<B: Backend> Model<B> {
         // Rotary position embeddings for positions 0..seq_len, shared across all blocks.
         // Position information is injected by rotating Q and K inside attention rather
         // than by adding an absolute position embedding here.
-        let (cos, sin) = rope_tables::<B>(0, seq_len, self.d_head, device);
+        let (cos, sin) = rope_tables::<B>(0, seq_len, self.head_dim, device);
         let mask = causal_mask::<B>(seq_len, device);
 
         let mut x = self.token_emb.forward(token_ids);
@@ -243,7 +334,7 @@ impl<B: Backend> Model<B> {
 
         // Rotate the new tokens at their absolute offset, so they sit at the right distance
         // from the keys already in the cache.
-        let (cos, sin) = rope_tables::<B>(pos, seq_len, self.d_head, device);
+        let (cos, sin) = rope_tables::<B>(pos, seq_len, self.head_dim, device);
 
         let mut x = self.token_emb.forward(token_ids);
 
@@ -300,7 +391,7 @@ impl<B: Backend> KvCache<B> {
     }
 }
 
-/// One layer's slice of a [`KvCache`]: keys and values of shape `[1, heads, len, d_head]`.
+/// One layer's slice of a [`KvCache`]: keys and values of shape `[1, n_heads, len, head_dim]`.
 #[derive(Debug)]
 pub struct LayerCache<B: Backend> {
     kv: Option<(Tensor<B, 4>, Tensor<B, 4>)>,
@@ -407,33 +498,35 @@ pub struct TransformerBlock<B: Backend> {
     ffn_up: Linear<B>,
     ffn_down: Linear<B>,
     ffn_dropout: Dropout,
-    heads: usize,
-    d_head: usize,
+    n_heads: usize,
+    head_dim: usize,
 }
 
 impl<B: Backend> TransformerBlock<B> {
-    pub fn new(d_model: usize, heads: usize, device: &B::Device) -> Self {
-        let d_head = d_model / heads;
+    pub fn new(config: &ModelConfig, device: &B::Device) -> Self {
+        // Attention runs at n_heads * head_dim wide, which need not equal emb_dim:
+        // the QKV projection widens into it and the output projection maps back.
+        let attn_width = config.n_heads * config.head_dim;
         let init = Initializer::XavierUniform { gain: 1.0 };
         Self {
-            ln1: LayerNormConfig::new(d_model).init(device),
-            attn_qkv: LinearConfig::new(d_model, 3 * d_model)
+            ln1: LayerNormConfig::new(config.emb_dim).init(device),
+            attn_qkv: LinearConfig::new(config.emb_dim, 3 * attn_width)
                 .with_initializer(init.clone())
                 .init(device),
-            attn_proj: LinearConfig::new(d_model, d_model)
+            attn_proj: LinearConfig::new(attn_width, config.emb_dim)
                 .with_initializer(init.clone())
                 .init(device),
             attn_dropout: DropoutConfig::new(DROPOUT_RATE).init(),
-            ln2: LayerNormConfig::new(d_model).init(device),
-            ffn_up: LinearConfig::new(d_model, 4 * d_model)
+            ln2: LayerNormConfig::new(config.emb_dim).init(device),
+            ffn_up: LinearConfig::new(config.emb_dim, config.hidden_dim)
                 .with_initializer(init.clone())
                 .init(device),
-            ffn_down: LinearConfig::new(4 * d_model, d_model)
+            ffn_down: LinearConfig::new(config.hidden_dim, config.emb_dim)
                 .with_initializer(init)
                 .init(device),
             ffn_dropout: DropoutConfig::new(DROPOUT_RATE).init(),
-            heads,
-            d_head,
+            n_heads: config.n_heads,
+            head_dim: config.head_dim,
         }
     }
 
@@ -465,24 +558,38 @@ impl<B: Backend> TransformerBlock<B> {
         sin: &Tensor<B, 4>,
         cache: &mut LayerCache<B>,
     ) -> Tensor<B, 3> {
-        let [batch, seq_len, d_model] = x.dims();
+        let [batch, seq_len, _emb_dim] = x.dims();
 
         // Pre-norm + self-attention
         let normed = self.ln1.forward(x.clone());
         let qkv = self.attn_qkv.forward(normed);
-        let qkv = qkv.reshape([batch, seq_len, 3, self.heads, self.d_head]);
+        let qkv = qkv.reshape([batch, seq_len, 3, self.n_heads, self.head_dim]);
 
-        let q = qkv
-            .clone()
-            .slice([0..batch, 0..seq_len, 0..1, 0..self.heads, 0..self.d_head]);
-        let k = qkv
-            .clone()
-            .slice([0..batch, 0..seq_len, 1..2, 0..self.heads, 0..self.d_head]);
-        let v = qkv.slice([0..batch, 0..seq_len, 2..3, 0..self.heads, 0..self.d_head]);
+        let q = qkv.clone().slice([
+            0..batch,
+            0..seq_len,
+            0..1,
+            0..self.n_heads,
+            0..self.head_dim,
+        ]);
+        let k = qkv.clone().slice([
+            0..batch,
+            0..seq_len,
+            1..2,
+            0..self.n_heads,
+            0..self.head_dim,
+        ]);
+        let v = qkv.slice([
+            0..batch,
+            0..seq_len,
+            2..3,
+            0..self.n_heads,
+            0..self.head_dim,
+        ]);
 
-        let q = q.reshape([batch, seq_len, self.heads, self.d_head]);
-        let k = k.reshape([batch, seq_len, self.heads, self.d_head]);
-        let v = v.reshape([batch, seq_len, self.heads, self.d_head]);
+        let q = q.reshape([batch, seq_len, self.n_heads, self.head_dim]);
+        let k = k.reshape([batch, seq_len, self.n_heads, self.head_dim]);
+        let v = v.reshape([batch, seq_len, self.n_heads, self.head_dim]);
 
         let q = q.swap_dims(1, 2);
         let k = k.swap_dims(1, 2);
@@ -510,7 +617,7 @@ impl<B: Backend> TransformerBlock<B> {
         };
         cache.kv = Some((k.clone(), v.clone()));
 
-        let scale = (self.d_head as f32).sqrt();
+        let scale = (self.head_dim as f32).sqrt();
         let k_t = k.swap_dims(2, 3);
         let attn = q.matmul(k_t) / scale;
         // A single query attends to the whole cache unconditionally: every cached position
@@ -522,7 +629,9 @@ impl<B: Backend> TransformerBlock<B> {
         let attn = activation::softmax(attn, 3);
         let out = attn.matmul(v);
 
-        let out = out.swap_dims(1, 2).reshape([batch, seq_len, d_model]);
+        let out = out
+            .swap_dims(1, 2)
+            .reshape([batch, seq_len, self.n_heads * self.head_dim]);
         let out = self.attn_proj.forward(out);
         let out = self.attn_dropout.forward(out);
 
@@ -580,8 +689,8 @@ pub struct Trainer<B: AutodiffBackend> {
 impl<B: AutodiffBackend> Trainer<B> {
     pub fn new(config: ModelConfig, device: &B::Device) -> Self {
         eprintln!(
-            "Creating model: {} layers, d_model={}, heads={}",
-            config.layers, config.d_model, config.heads
+            "Creating model: {} layers, emb_dim={}, heads={}",
+            config.n_layers, config.emb_dim, config.n_heads
         );
         let model = Model::new(&config, device);
 
@@ -750,6 +859,21 @@ mod tests {
             .unwrap()
     }
 
+    /// A deliberately awkward configuration: head_dim is not emb_dim / n_heads, so any
+    /// place that still conflates the attention width with the embedding width fails.
+    fn test_config() -> ModelConfig {
+        ModelConfig {
+            preset: None,
+            n_layers: 2,
+            emb_dim: 32,
+            n_heads: 2,
+            head_dim: 10,
+            hidden_dim: 64,
+            ctx_len: 16,
+            vocab_size: 64,
+        }
+    }
+
     /// Stepping through a sequence with the cache must produce the same logits as running
     /// the whole prefix through the uncached path. This is the property that makes the
     /// cache an optimization rather than a change in behavior.
@@ -758,7 +882,7 @@ mod tests {
         type B = NdArray<f32>;
 
         let device = NdArrayDevice::default();
-        let config = ModelConfig::new(2, 32, 2, 16, 64);
+        let config = test_config();
         let model = Model::<B>::new(&config, &device);
         let tokens: Vec<i32> = vec![3, 14, 15, 9, 26, 5, 35];
 
@@ -798,7 +922,7 @@ mod tests {
         type B = NdArray<f32>;
 
         let device = NdArrayDevice::default();
-        let config = ModelConfig::new(2, 32, 2, 16, 64);
+        let config = test_config();
         let model = Model::<B>::new(&config, &device);
         let tokens: Vec<i32> = vec![7, 1, 42, 8, 19];
 
@@ -827,5 +951,32 @@ mod tests {
                 "logit {i} diverged: uncached {want}, cached {got}",
             );
         }
+    }
+
+    /// Checkpoints trained before the preset work saved their config with the old
+    /// field names and without head_dim/hidden_dim; those files must keep loading
+    /// with the derivations that built them.
+    #[test]
+    fn loads_pre_preset_config_format() {
+        let json = r#"{"layers":4,"d_model":256,"heads":4,"ctx_len":256,"vocab_size":50281}"#;
+        let config: ModelConfig = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.preset, None);
+        assert_eq!(config.n_layers, 4);
+        assert_eq!(config.emb_dim, 256);
+        assert_eq!(config.n_heads, 4);
+        assert_eq!(config.head_dim, 64);
+        assert_eq!(config.hidden_dim, 1024);
+        assert_eq!(config.ctx_len, 256);
+        assert_eq!(config.vocab_size, 50281);
+    }
+
+    /// The preset name is stored in model.json as information and must survive a
+    /// save/load round trip with its proper spelling.
+    #[test]
+    fn preset_name_round_trips_through_json() {
+        let json = serde_json::to_string(&ModelConfig::somen()).unwrap();
+        let config: ModelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(config.preset.as_deref(), Some("Sōmen"));
     }
 }

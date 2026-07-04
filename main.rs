@@ -36,6 +36,11 @@ enum Cmd {
         /// Maximum number of training epochs
         #[arg(long, default_value = "1000")]
         max_epochs: usize,
+
+        /// Model depth (number of transformer layers); the rest of the
+        /// model layout is derived from it
+        #[arg(long, default_value = "4")]
+        depth: usize,
     },
 
     /// Evaluate model perplexity on a test corpus
@@ -92,13 +97,14 @@ fn main() {
             output,
             backend,
             max_epochs,
+            depth,
         } => {
             let backend = match backend {
                 Backend::Gpu => noodle::Backend::Wgpu,
                 Backend::Cuda => noodle::Backend::Cuda,
                 Backend::Cpu => noodle::Backend::Cpu,
             };
-            noodle::train(&input, &output, backend, max_epochs).expect("training failed");
+            noodle::train(&input, &output, backend, max_epochs, depth).expect("training failed");
         }
         Cmd::Finetune {
             model,

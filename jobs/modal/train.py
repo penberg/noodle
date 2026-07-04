@@ -73,6 +73,7 @@ def train_noodle(
     corpus_file: str,
     model_dir: str = "/data/models/noodle",
     max_epochs: int = 10,
+    depth: int = 4,
 ):
     """Train Noodle on Modal GPU."""
     import subprocess
@@ -98,12 +99,15 @@ def train_noodle(
         "cuda",
         "--max-epochs",
         str(max_epochs),
+        "--depth",
+        str(depth),
     ]
 
     print(f"Running: {' '.join(cmd)}")
     print(f"Corpus: {corpus_file}")
     print(f"Model dir: {model_dir}")
     print(f"Max epochs: {max_epochs}")
+    print(f"Depth: {depth}")
     print("-" * 60)
 
     # Run training
@@ -163,6 +167,7 @@ def main(
     corpus_file: str,
     model_dir: str = "/data/models/noodle",
     max_epochs: int = 10,
+    depth: int = 4,
 ):
     """Train Noodle on Modal GPU.
 
@@ -170,9 +175,11 @@ def main(
         corpus_file: Path to corpus file in the volume (e.g., /data/corpus/tinystories-train.txt)
         model_dir: Directory to save model in the volume (default: /data/models/noodle)
         max_epochs: Maximum training epochs (default: 10)
+        depth: Model depth in transformer layers; model layout is derived from it (default: 4)
     """
     train_noodle.remote(
         corpus_file=corpus_file,
         model_dir=model_dir,
         max_epochs=max_epochs,
+        depth=depth,
     )

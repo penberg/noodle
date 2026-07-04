@@ -2,7 +2,7 @@
 
 ## Summary
 
-Noodle is a minimal and clean small language model, following the GPT-2 decoder-only transformer architecture. The implementation closely follows the original GPT-2 paper with pre-LayerNorm, learned positional embeddings, and GELU activations.
+Noodle is a minimal and clean small language model, following the GPT-2 decoder-only transformer architecture. The implementation closely follows the original GPT-2 paper with pre-LayerNorm and GELU activations, but uses rotary position embeddings (RoPE) in place of learned positional embeddings.
 
 ## Command Line Interface
 
@@ -39,7 +39,6 @@ The model architecture is very small yielding ~29M parameters.
 | Component | Parameters | Formula |
 |-----------|------------|---------|
 | Token embeddings | 12,872,000 | vocab_size × d_model = 50,281 × 256 |
-| Position embeddings | 65,536 | ctx_len × d_model = 256 × 256 |
 | Per-block (×4 blocks): | | |
 | — LN1 (weight + bias) | 512 | 2 × d_model |
 | — QKV projection | 197,376 | d_model × 3×d_model + 3×d_model |
@@ -67,13 +66,40 @@ Noodle uses [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs) with the `p50
 
 ### Embeddings
 
-Two embedding tables convert discrete inputs to continuous vectors:
+**Token embeddings** (`token_emb`) map each vocabulary token to a d_model-dimensional vector. Initialized with Normal(μ=0, σ=0.02). This is the only embedding table:
 
-1. **Token embeddings** (`token_emb`): Maps each vocabulary token to a d_model-dimensional vector. Initialized with Normal(μ=0, σ=0.02).
+```
+x = token_emb[tokens]
+```
 
-2. **Position embeddings** (`pos_emb`): Learned embeddings for each position 0..ctx_len. Unlike the original Transformer's sinusoidal encodings, GPT uses learned positional embeddings. Also initialized with Normal(0, 0.02).
+Position information is *not* added to the input. Instead, it is injected inside attention via rotary position embeddings (RoPE), described below.
 
-The forward pass adds these: `x = token_emb[tokens] + pos_emb[0:seq_len]`
+### Rotary Position Embeddings (RoPE)
+
+Rather than adding a learned or sinusoidal position vector to the token embeddings, Noodle encodes position by **rotating** the query and key vectors inside each attention head. RoPE has no learned parameters.
+
+For a head dimension `d_head`, the vector is treated as `d_head/2` pairs. Pair `i` is rotated by an angle `θ_i · pos`, where the per-pair frequency is:
+
+```
+θ_i = base^(-2i / d_head),   base = 10000
+```
+
+Low dimensions rotate slowly (coarse position), high dimensions rotate quickly (fine position). Because rotation is a linear map, the attention dot product `q·k` ends up depending only on the **relative** distance `pos_q − pos_k` between the two tokens — which is what lets the model generalize across positions without learned position parameters.
+
+Implementation (the "rotate-half" layout, as in LLaMA/GPT-NeoX):
+
+```
+# Precomputed once per forward pass, shared across all blocks:
+freqs = outer(positions, inv_freq)        # [seq_len, d_head/2]
+emb   = concat(freqs, freqs)              # [seq_len, d_head]
+cos, sin = cos(emb), sin(emb)             # [1, 1, seq_len, d_head]
+
+# Applied to Q and K in every head (after QK norm):
+rotate_half(x) = concat(-x[..., d/2:], x[..., :d/2])
+x_rot = x * cos + rotate_half(x) * sin
+```
+
+RoPE is applied *after* QK norm so the rotation acts on unit-scale vectors and only the phase (not magnitude) carries position information.
 
 ### Transformer Block
 
@@ -108,7 +134,14 @@ Multi-head scaled dot-product attention with causal masking:
    ```
    This prevents attention score explosion during training. Without normalization, Q·K^T can produce arbitrarily large values as weights grow, causing softmax overflow and NaN loss. With QK norm, the dot product becomes a cosine similarity bounded by geometry.
 
-4. **Scaled dot-product attention**:
+4. **Rotary position embeddings**: Rotate Q and K by their position-dependent angles (see [Rotary Position Embeddings](#rotary-position-embeddings-rope)):
+   ```
+   Q = apply_rope(Q, cos, sin)
+   K = apply_rope(K, cos, sin)
+   ```
+   This is the only place position enters the model.
+
+5. **Scaled dot-product attention**:
    ```
    scores = (Q @ K.T) / sqrt(d_head)
    scores = scores + causal_mask  # -1e9 for future positions
@@ -116,7 +149,7 @@ Multi-head scaled dot-product attention with causal masking:
    out = attn @ V
    ```
 
-5. **Output projection**: Linear back to d_model, then dropout:
+6. **Output projection**: Linear back to d_model, then dropout:
    ```
    out = Dropout(Linear(d_model, d_model)(out.reshape(...)))
    ```
@@ -248,3 +281,5 @@ Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N
 Alec Radford, Karthik Narasimhan, Tim Salimans, Ilya Sutskever (2018). "[Improving Language Understanding by Generative Pre-Training](https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf)".
 
 Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever (2019). "[Language Models are Unsupervised Multitask Learners](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)".
+
+Jianlin Su, Yu Lu, Shengfeng Pan, Ahmed Murtadha, Bo Wen, Yunfeng Liu (2021). "[RoFormer: Enhanced Transformer with Rotary Position Embedding](https://arxiv.org/abs/2104.09864)". _arXiv:2104.09864_.

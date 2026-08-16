@@ -345,16 +345,16 @@ fn train_loop<B: AutodiffBackend>(
     let test_prompt = "Once upon a time";
     let tokenizer = Tokenizer::new()?;
     let prompt_tokens = tokenizer.encode(test_prompt);
-    let inner_model = trainer.model.clone().valid();
+    let inner_model = trainer.model.valid();
     let mut rng = rand::thread_rng();
     let config = crate::inference::SamplingConfig::default();
 
-    let mut tokens = prompt_tokens.clone();
+    let mut session = crate::Session::new(inner_model, device.clone());
+    session.push(&prompt_tokens);
     for _ in 0..20 {
-        let next = crate::generate_next_token(&inner_model, &tokens, &config, &device, &mut rng);
-        tokens.push(next);
+        session.next_token(&config, &mut rng);
     }
-    let generated = tokenizer.decode(&tokens)?;
+    let generated = tokenizer.decode(session.history())?;
     eprintln!("Test: \"{}\" -> \"{}\"", test_prompt, generated);
     eprintln!(
         "Training complete. Best model saved to {}",

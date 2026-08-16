@@ -176,22 +176,11 @@ impl<B: Backend> Model<B> {
     pub fn forward(&self, token_ids: Tensor<B, 2, Int>, device: &B::Device) -> Tensor<B, 3> {
         let [_batch, seq_len] = token_ids.dims();
 
-        // Rotary position embeddings: precompute the cos/sin tables once and share
-        // them across all blocks. Position information is injected by rotating Q and K
-        // inside attention rather than by adding an absolute position embedding here.
-        let (cos, sin) = rope_tables::<B>(seq_len, self.d_head, device);
-
-        // Causal mask [1, 1, seq_len, seq_len]: 0 for attend, -1e9 for mask
-        // triu_mask returns FALSE for upper triangle (future), TRUE for lower triangle (past/current)
-        // (it's a "mask for upper triangle operation", not "upper triangle is true")
-        let attn_mask: Tensor<B, 2, Bool> = Tensor::triu_mask([seq_len, seq_len], 1, device);
-        let zeros: Tensor<B, 2> = Tensor::zeros([seq_len, seq_len], device);
-        let large_neg: Tensor<B, 2> = Tensor::full([seq_len, seq_len], -1e9f32, device);
-        // mask_where: self.mask_where(mask, value) → value where TRUE, self where FALSE
-        // TRUE (past/current, j ≤ i) → zeros (can attend)
-        // FALSE (future, j > i) → large_neg (blocked)
-        let mask = large_neg.mask_where(attn_mask, zeros);
-        let mask = mask.reshape([1, 1, seq_len, seq_len]);
+        // Rotary position embeddings for positions 0..seq_len, shared across all blocks.
+        // Position information is injected by rotating Q and K inside attention rather
+        // than by adding an absolute position embedding here.
+        let (cos, sin) = rope_tables::<B>(0, seq_len, self.d_head, device);
+        let mask = causal_mask::<B>(seq_len, device);
 
         let mut x = self.token_emb.forward(token_ids);
 
@@ -200,14 +189,149 @@ impl<B: Backend> Model<B> {
         }
 
         let x = self.ln_f.forward(x);
+
         self.output.forward(x)
+    }
+
+    /// An empty key/value cache sized for this model.
+    pub fn new_cache(&self) -> KvCache<B> {
+        KvCache::new(self.blocks.len())
+    }
+
+    /// Forward pass that reuses cached keys and values: [1, seq_len] -> [1, vocab_size].
+    ///
+    /// The tokens are treated as continuing whatever is already in `cache`, and their keys
+    /// and values are appended to it. Only the logits for the final position are returned:
+    /// generation samples from that position alone, and the output head is the most
+    /// expensive matmul in the model, so the hidden state is sliced before the projection
+    /// rather than after it. A linear layer is pointwise across positions, so that is the
+    /// same answer for less work.
+    ///
+    /// Two shapes of call are supported:
+    /// - **Prefill**, into an empty cache: any `seq_len`, masked causally.
+    /// - **Decode**, continuing a non-empty cache: exactly one token, which needs no mask
+    ///   at all, since a single query attends to the cache and to itself, all of which is
+    ///   in the past.
+    ///
+    /// Prefilling on top of a non-empty cache would need a rectangular mask and is not
+    /// supported; feed those tokens one at a time instead.
+    pub fn forward_cached(
+        &self,
+        token_ids: Tensor<B, 2, Int>,
+        cache: &mut KvCache<B>,
+        device: &B::Device,
+    ) -> Tensor<B, 2> {
+        let [batch, seq_len] = token_ids.dims();
+        assert_eq!(batch, 1, "the kv cache only supports a batch size of 1");
+
+        let pos = cache.len();
+        assert!(
+            pos + seq_len <= self.ctx_len,
+            "cached tokens ({pos}) plus new tokens ({seq_len}) exceed the context length ({})",
+            self.ctx_len,
+        );
+
+        let mask = if pos == 0 {
+            Some(causal_mask::<B>(seq_len, device))
+        } else {
+            assert_eq!(
+                seq_len, 1,
+                "only one token at a time can be appended to a non-empty cache",
+            );
+            None
+        };
+
+        // Rotate the new tokens at their absolute offset, so they sit at the right distance
+        // from the keys already in the cache.
+        let (cos, sin) = rope_tables::<B>(pos, seq_len, self.d_head, device);
+
+        let mut x = self.token_emb.forward(token_ids);
+
+        for (block, layer) in self.blocks.iter().zip(cache.layers.iter_mut()) {
+            x = block.forward_cached(x, mask.as_ref(), &cos, &sin, layer);
+        }
+        cache.len += seq_len;
+
+        let x = self.ln_f.forward(x);
+        let x = x.slice([0..1, (seq_len - 1)..seq_len]);
+        let x = self.output.forward(x);
+
+        x.reshape([1, self.vocab_size])
     }
 }
 
+/// The keys and values computed for every token the model has already seen, held per layer
+/// so that generating a token costs one position of work instead of re-running the whole
+/// context.
+///
+/// Entries are stored with their rotary embedding already applied at the absolute position
+/// they were added at. That is what lets a caller evict from the front without rewriting
+/// the cache: RoPE makes `q_p . k_j` depend only on `p - j`, so dropping old entries leaves
+/// every surviving pair at the distance it had before.
+#[derive(Debug)]
+pub struct KvCache<B: Backend> {
+    layers: Vec<LayerCache<B>>,
+    len: usize,
+}
+
+impl<B: Backend> KvCache<B> {
+    fn new(layers: usize) -> Self {
+        Self {
+            layers: (0..layers).map(|_| LayerCache::new()).collect(),
+            len: 0,
+        }
+    }
+
+    /// Number of tokens currently cached.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Drop everything, so the next call starts from position zero again.
+    pub fn clear(&mut self) {
+        for layer in &mut self.layers {
+            layer.kv = None;
+        }
+        self.len = 0;
+    }
+}
+
+/// One layer's slice of a [`KvCache`]: keys and values of shape `[1, heads, len, d_head]`.
+#[derive(Debug)]
+pub struct LayerCache<B: Backend> {
+    kv: Option<(Tensor<B, 4>, Tensor<B, 4>)>,
+}
+
+impl<B: Backend> LayerCache<B> {
+    fn new() -> Self {
+        Self { kv: None }
+    }
+}
+
+/// Build the additive causal attention mask: `[1, 1, seq_len, seq_len]`, holding 0 where a
+/// position may attend and a large negative value where it may not.
+fn causal_mask<B: Backend>(seq_len: usize, device: &B::Device) -> Tensor<B, 4> {
+    // triu_mask returns FALSE for upper triangle (future), TRUE for lower triangle (past/current)
+    // (it's a "mask for upper triangle operation", not "upper triangle is true")
+    let attn_mask: Tensor<B, 2, Bool> = Tensor::triu_mask([seq_len, seq_len], 1, device);
+    let zeros: Tensor<B, 2> = Tensor::zeros([seq_len, seq_len], device);
+    let large_neg: Tensor<B, 2> = Tensor::full([seq_len, seq_len], -1e9f32, device);
+
+    // mask_where: self.mask_where(mask, value) → value where TRUE, self where FALSE
+    // TRUE (past/current, j ≤ i) → zeros (can attend)
+    // FALSE (future, j > i) → large_neg (blocked)
+    let mask = large_neg.mask_where(attn_mask, zeros);
+
+    mask.reshape([1, 1, seq_len, seq_len])
+}
 /// Base frequency for rotary position embeddings (RoPE), following the original paper.
 const ROPE_BASE: f32 = 10_000.0;
 
-/// Precompute the RoPE cosine and sine tables for a given sequence length.
+/// Build the RoPE cosine and sine tables for `len` positions starting at `pos`.
 ///
 /// Rotary position embeddings encode absolute position by rotating pairs of dimensions
 /// in the Q and K vectors by an angle proportional to the position. Dimension pair `i`
@@ -217,12 +341,18 @@ const ROPE_BASE: f32 = 10_000.0;
 /// distance between the two positions — the property that makes RoPE generalize across
 /// sequence lengths without any learned position parameters.
 ///
-/// Returns `(cos, sin)`, each of shape `[1, 1, seq_len, d_head]` so they broadcast over the
+/// The `pos` offset is what lets a decode step rotate a single token as position 200
+/// rather than position 0: attention depends only on the distance between two positions,
+/// so a cached key keeps the rotation it was built with, and a new query has to be built
+/// at its true absolute position for that distance to come out right.
+///
+/// Returns `(cos, sin)`, each of shape `[1, 1, len, d_head]` so they broadcast over the
 /// `[batch, heads, seq_len, d_head]` Q/K tensors. This uses the "rotate-half" layout
 /// (as in LLaMA/GPT-NeoX): the frequency vector is duplicated so the first and second
 /// halves of `d_head` share angles, pairing dimension `i` with dimension `i + d_head/2`.
 fn rope_tables<B: Backend>(
-    seq_len: usize,
+    pos: usize,
+    len: usize,
     d_head: usize,
     device: &B::Device,
 ) -> (Tensor<B, 4>, Tensor<B, 4>) {
@@ -234,17 +364,17 @@ fn rope_tables<B: Backend>(
         .collect();
     let inv_freq = Tensor::<B, 1>::from_data(TensorData::new(inv_freq, [half]), device);
 
-    let positions: Vec<f32> = (0..seq_len).map(|p| p as f32).collect();
-    let positions = Tensor::<B, 1>::from_data(TensorData::new(positions, [seq_len]), device);
+    let positions: Vec<f32> = (pos..pos + len).map(|p| p as f32).collect();
+    let positions = Tensor::<B, 1>::from_data(TensorData::new(positions, [len]), device);
 
-    // Outer product: freqs[p, i] = position p * inv_freq[i] -> [seq_len, half]
-    let freqs = positions.reshape([seq_len, 1]) * inv_freq.reshape([1, half]);
+    // Outer product: freqs[p, i] = position p * inv_freq[i] -> [len, half]
+    let freqs = positions.reshape([len, 1]) * inv_freq.reshape([1, half]);
 
     // Duplicate along the feature dim so angles line up with the rotate-half layout.
-    let emb = Tensor::cat(vec![freqs.clone(), freqs], 1); // [seq_len, d_head]
+    let emb = Tensor::cat(vec![freqs.clone(), freqs], 1); // [len, d_head]
 
-    let cos = emb.clone().cos().reshape([1, 1, seq_len, d_head]);
-    let sin = emb.sin().reshape([1, 1, seq_len, d_head]);
+    let cos = emb.clone().cos().reshape([1, 1, len, d_head]);
+    let sin = emb.sin().reshape([1, 1, len, d_head]);
     (cos, sin)
 }
 
@@ -318,6 +448,23 @@ impl<B: Backend> TransformerBlock<B> {
         cos: &Tensor<B, 4>,
         sin: &Tensor<B, 4>,
     ) -> Tensor<B, 3> {
+        self.forward_cached(x, Some(mask), cos, sin, &mut LayerCache::new())
+    }
+
+    /// Forward pass over `x`, attending to `cache` as well as to `x` itself, and appending
+    /// the keys and values computed for `x` to it.
+    ///
+    /// With an empty cache and a mask this is an ordinary causal forward pass; with a
+    /// non-empty cache and no mask it is a single decode step. See
+    /// [`Model::forward_cached`] for why those are the only two shapes.
+    pub fn forward_cached(
+        &self,
+        x: Tensor<B, 3>,
+        mask: Option<&Tensor<B, 4>>,
+        cos: &Tensor<B, 4>,
+        sin: &Tensor<B, 4>,
+        cache: &mut LayerCache<B>,
+    ) -> Tensor<B, 3> {
         let [batch, seq_len, d_model] = x.dims();
 
         // Pre-norm + self-attention
@@ -352,10 +499,26 @@ impl<B: Backend> TransformerBlock<B> {
         let q = apply_rope(q, cos, sin);
         let k = apply_rope(k, cos, sin);
 
+        // Prepend whatever the cache already holds, then put the extended keys and values
+        // back for the next call. Cloning is a handle clone, not a copy.
+        let (k, v) = match cache.kv.take() {
+            Some((k_prev, v_prev)) => (
+                Tensor::cat(vec![k_prev, k], 2),
+                Tensor::cat(vec![v_prev, v], 2),
+            ),
+            None => (k, v),
+        };
+        cache.kv = Some((k.clone(), v.clone()));
+
         let scale = (self.d_head as f32).sqrt();
         let k_t = k.swap_dims(2, 3);
         let attn = q.matmul(k_t) / scale;
-        let attn = attn + mask.clone();
+        // A single query attends to the whole cache unconditionally: every cached position
+        // precedes it, so there is nothing to mask out.
+        let attn = match mask {
+            Some(mask) => attn + mask.clone(),
+            None => attn,
+        };
         let attn = activation::softmax(attn, 3);
         let out = attn.matmul(v);
 
@@ -567,5 +730,102 @@ impl<B: AutodiffBackend> Trainer<B> {
             )
             .map_err(|e| crate::Error::Burn(e.to_string()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn::backend::{NdArray, ndarray::NdArrayDevice};
+
+    /// Logits for the final position of an uncached forward pass, which is what a cached
+    /// decode step returns.
+    fn last_row<B: Backend>(logits: Tensor<B, 3>) -> Vec<f32> {
+        let [batch, seq_len, vocab] = logits.dims();
+
+        logits
+            .slice([0..batch, (seq_len - 1)..seq_len, 0..vocab])
+            .into_data()
+            .to_vec::<f32>()
+            .unwrap()
+    }
+
+    /// Stepping through a sequence with the cache must produce the same logits as running
+    /// the whole prefix through the uncached path. This is the property that makes the
+    /// cache an optimization rather than a change in behavior.
+    #[test]
+    fn cached_decode_matches_uncached_forward() {
+        type B = NdArray<f32>;
+
+        let device = NdArrayDevice::default();
+        let config = ModelConfig::new(2, 32, 2, 16, 64);
+        let model = Model::<B>::new(&config, &device);
+        let tokens: Vec<i32> = vec![3, 14, 15, 9, 26, 5, 35];
+
+        let ids = |slice: &[i32]| {
+            Tensor::<B, 2, Int>::from_data(
+                TensorData::new(slice.to_vec(), [1, slice.len()]),
+                &device,
+            )
+        };
+
+        let expected = last_row(model.forward(ids(&tokens), &device));
+
+        // Prefill everything but the last token, then decode that one from the cache.
+        let (head, tail) = tokens.split_at(tokens.len() - 1);
+        let mut cache = model.new_cache();
+        model.forward_cached(ids(head), &mut cache, &device);
+        let actual = model
+            .forward_cached(ids(tail), &mut cache, &device)
+            .into_data()
+            .to_vec::<f32>()
+            .unwrap();
+
+        assert_eq!(cache.len(), tokens.len());
+        assert_eq!(expected.len(), actual.len());
+        for (i, (want, got)) in expected.iter().zip(actual.iter()).enumerate() {
+            assert!(
+                (want - got).abs() < 1e-4,
+                "logit {i} diverged: uncached {want}, cached {got}",
+            );
+        }
+    }
+
+    /// Decoding one token at a time from an empty cache must also match, since that is how
+    /// a caller feeds prompt tokens that arrive after the cache is already warm.
+    #[test]
+    fn token_at_a_time_matches_uncached_forward() {
+        type B = NdArray<f32>;
+
+        let device = NdArrayDevice::default();
+        let config = ModelConfig::new(2, 32, 2, 16, 64);
+        let model = Model::<B>::new(&config, &device);
+        let tokens: Vec<i32> = vec![7, 1, 42, 8, 19];
+
+        let ids = |slice: &[i32]| {
+            Tensor::<B, 2, Int>::from_data(
+                TensorData::new(slice.to_vec(), [1, slice.len()]),
+                &device,
+            )
+        };
+
+        let expected = last_row(model.forward(ids(&tokens), &device));
+
+        let mut cache = model.new_cache();
+        let mut actual = Vec::new();
+        for token in &tokens {
+            actual = model
+                .forward_cached(ids(&[*token]), &mut cache, &device)
+                .into_data()
+                .to_vec::<f32>()
+                .unwrap();
+        }
+
+        for (i, (want, got)) in expected.iter().zip(actual.iter()).enumerate() {
+            assert!(
+                (want - got).abs() < 1e-4,
+                "logit {i} diverged: uncached {want}, cached {got}",
+            );
+        }
     }
 }

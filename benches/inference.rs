@@ -1,9 +1,12 @@
 //! Inference benchmarks: the forward pass and single-token generation.
 //!
 //! `forward` measures the model's forward pass in isolation (embeddings, RoPE,
-//! attention, FFN, output projection). `generate_next_token` measures the whole
-//! inference step as the chat loop calls it: forward pass, reading the last-position
-//! logits back to the host, repetition penalty, and top-k/top-p sampling.
+//! attention, FFN, output projection) with logits at every position — the shape
+//! training and eval need, and the one [`Model::forward`] still serves.
+//!
+//! `generate_next_token` measures the whole inference step as the chat loop calls it:
+//! a cached forward pass over one new position, reading the last-position logits back
+//! to the host, repetition penalty, and top-k/top-p sampling.
 //!
 //! Both run at a full 256-token context and batch size 1 — the worst case for a chat
 //! session, and the shape `chat.rs` converges on once a conversation gets going.
@@ -17,7 +20,7 @@ use burn::{
 };
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use noodle::{
-    generate_next_token,
+    Session,
     inference::SamplingConfig,
     model::{Model, ModelConfig},
 };
@@ -36,8 +39,11 @@ fn bench_inference<B: Backend>(c: &mut Criterion, device: &B::Device, backend_na
     let model: Model<B> = Model::new(&config, device);
     let sampling = SamplingConfig::default();
 
+    // `forward` borrows the model; `generate_next_token` consumes it into a Session, so
+    // it has to run second. One model rather than two keeps the benchmark's footprint to
+    // a single set of weights.
     bench_forward::<B>(c, &model, &config, device, backend_name);
-    bench_generate::<B>(c, &model, &sampling, device, backend_name);
+    bench_generate::<B>(c, model, &sampling, device, backend_name);
 }
 
 /// The forward pass alone: `[1, CTX_LEN] -> [1, CTX_LEN, vocab_size]`.
@@ -74,24 +80,30 @@ fn bench_forward<B: Backend>(
 }
 
 /// One full generation step, as `chat` and the training smoke test call it.
+///
+/// The session is primed with a full context and then generates continuously, so this is
+/// steady-state decoding against a warm cache rather than a cold first token. That also
+/// means the measurement absorbs the cost of eviction: once the conversation outgrows the
+/// context window the session drops half the cache and re-prefills, which by design
+/// happens once every `CTX_LEN / 2` tokens. Amortizing that over a run is the point —
+/// it's what a long chat actually pays per token.
 fn bench_generate<B: Backend>(
     c: &mut Criterion,
-    model: &Model<B>,
+    model: Model<B>,
     sampling: &SamplingConfig,
     device: &B::Device,
     backend_name: &str,
 ) {
-    let tokens = fake_tokens(CTX_LEN);
+    let mut session = Session::new(model, device.clone());
+    session.push(&fake_tokens(CTX_LEN));
 
-    // Untimed first call, for the same reason as in `bench_forward`.
+    // Untimed calls first, for the same reason as in `bench_forward`, and to get past the
+    // prefill so that timing starts against a warm cache.
     let mut warmup_rng = StdRng::seed_from_u64(RNG_SEED);
-    black_box(generate_next_token(
-        model,
-        &tokens,
-        sampling,
-        device,
-        &mut warmup_rng,
-    ));
+    for _ in 0..3 {
+        black_box(session.next_token(sampling, &mut warmup_rng));
+    }
+    sync::<B>(device);
 
     let mut group = c.benchmark_group(format!("inference/{backend_name}"));
     // One token out per call: this is the metric that matters for interactive
@@ -100,13 +112,10 @@ fn bench_generate<B: Backend>(
     group.bench_function("generate_next_token", |b| {
         let mut rng = StdRng::seed_from_u64(RNG_SEED);
         b.iter(|| {
-            let token = generate_next_token(
-                model,
-                black_box(&tokens),
-                sampling,
-                device,
-                black_box(&mut rng),
-            );
+            let token = session.next_token(sampling, black_box(&mut rng));
+            // Reading the logits back to the host already forces the queued work to
+            // finish; this only guards against that ceasing to be true.
+            sync::<B>(device);
             black_box(token)
         });
     });

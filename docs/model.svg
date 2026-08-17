@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 820" width="1000" height="820" role="img" aria-label="Noodle model architecture: input tokens, token embedding, four pre-norm transformer blocks with fused QKV attention, parameter-free RMS norm on Q and K, rotary position embeddings and a GELU feed-forward network, then a final layer norm and an untied output projection to logits.">
+  <title>Noodle model architecture</title>
+  <desc>A decoder-only transformer. Left: the top-level stack, from input tokens through a token embedding, four transformer blocks, a final layer norm and an output projection, to logits. Right: one transformer block expanded, showing a pre-norm layer norm, a fused QKV linear, parameter-free RMS norm on Q and K, rotary position embeddings, masked softmax attention, an output projection with dropout, and a GELU feed-forward network, each wrapped in a residual connection. Sizes are the default configuration from train.rs.</desc>
+
+  <style>
+    :root {
+      --bg: #ffffff;
+      --ink: #1a1a18;
+      --muted: #6b6a66;
+      --line: #c6c3bd;
+      --fill: #f7f6f3;
+      --fill2: #edebe6;
+      --accent: #0f766e;
+    }
+    text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: var(--ink); }
+    .t    { font-size: 16px; font-weight: 600; }
+    .st   { font-size: 11.5px; fill: var(--muted); }
+    .lbl  { font-size: 12.5px; font-weight: 500; }
+    .dim  { font-size: 10.5px; fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .fld  { font-size: 11px; fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .note { font-size: 10.5px; fill: var(--muted); }
+    .acc  { font-size: 10px; fill: var(--accent); font-weight: 600; letter-spacing: .04em; }
+    .box  { fill: var(--fill); stroke: var(--line); stroke-width: 1.2; }
+    .box2 { fill: var(--fill2); stroke: var(--line); stroke-width: 1.2; }
+    .flow { stroke: var(--ink); stroke-width: 1.4; fill: none; }
+    .res  { stroke: var(--accent); stroke-width: 1.6; fill: none; }
+    .ghost{ stroke: var(--line); stroke-width: 1; fill: none; stroke-dasharray: 4 4; opacity: .65; }
+  </style>
+
+  <defs>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--ink)"/>
+    </marker>
+    <marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1000" height="820" fill="var(--bg)"/>
+
+  <text class="t"  x="56" y="32">Noodle model architecture</text>
+  <text class="st" x="56" y="54">decoder-only transformer · default config: layers=4 · d_model=256 · heads=4 · d_head=64 · ctx_len=256 · vocab=50281 (p50k_base)</text>
+
+  <!-- ============ left column: top-level stack ============ -->
+
+  <rect class="box2" x="56" y="96" width="220" height="52" rx="26"/>
+  <text class="lbl" x="166" y="118" text-anchor="middle">Input tokens</text>
+  <text class="dim" x="166" y="134" text-anchor="middle">token_ids · [B, S]</text>
+
+  <path class="flow" d="M166,148 V182" marker-end="url(#arw)"/>
+
+  <rect class="box" x="56" y="190" width="220" height="52" rx="8"/>
+  <text class="lbl" x="166" y="212" text-anchor="middle">Token embedding</text>
+  <text class="dim" x="166" y="228" text-anchor="middle">token_emb · 50281 × 256</text>
+
+  <path class="flow" d="M166,242 V278" marker-end="url(#arw)"/>
+
+  <!-- stacked cards: 4 identical blocks -->
+  <rect class="box" x="68" y="282" width="220" height="72" rx="8"/>
+  <rect class="box" x="62" y="287" width="220" height="72" rx="8"/>
+  <rect class="box" x="56" y="292" width="220" height="72" rx="8"/>
+  <text class="lbl" x="166" y="316" text-anchor="middle">Transformer block</text>
+  <text class="dim" x="166" y="334" text-anchor="middle">blocks · × 4</text>
+  <text class="dim" x="166" y="351" text-anchor="middle">[B, S, 256] → [B, S, 256]</text>
+
+  <path class="flow" d="M166,364 V404" marker-end="url(#arw)"/>
+
+  <rect class="box" x="56" y="414" width="220" height="52" rx="8"/>
+  <text class="lbl" x="166" y="436" text-anchor="middle">Final layer norm</text>
+  <text class="dim" x="166" y="452" text-anchor="middle">ln_f</text>
+
+  <path class="flow" d="M166,466 V506" marker-end="url(#arw)"/>
+
+  <rect class="box" x="56" y="516" width="220" height="52" rx="8"/>
+  <text class="lbl" x="166" y="538" text-anchor="middle">Output projection</text>
+  <text class="dim" x="166" y="554" text-anchor="middle">output · 256 → 50281</text>
+
+  <path class="flow" d="M166,568 V614" marker-end="url(#arw)"/>
+
+  <rect class="box2" x="56" y="618" width="220" height="52" rx="26"/>
+  <text class="lbl" x="166" y="640" text-anchor="middle">Logits</text>
+  <text class="dim" x="166" y="656" text-anchor="middle">logits · [B, S, 50281]</text>
+
+  <!-- ============ callout cone ============ -->
+  <path class="ghost" d="M292,292 L410,96"/>
+  <path class="ghost" d="M292,354 L410,740"/>
+
+  <!-- ============ right panel: one block, expanded ============ -->
+
+  <rect x="410" y="96" width="550" height="644" rx="12" fill="none" stroke="var(--line)" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text class="lbl" x="960" y="86" font-weight="600" text-anchor="end">Transformer block</text>
+
+  <path class="flow" d="M692,100 V136" marker-end="url(#arw)"/>
+  <circle cx="692" cy="116" r="3.2" fill="var(--accent)"/>
+
+  <rect class="box" x="452" y="142" width="480" height="34" rx="7"/>
+  <text class="lbl" x="692" y="164" text-anchor="middle">Layer norm  ·  <tspan class="fld">ln1</tspan></text>
+
+  <path class="flow" d="M692,176 V184" marker-end="url(#arw)"/>
+
+  <rect class="box" x="452" y="190" width="480" height="34" rx="7"/>
+  <text class="lbl" x="692" y="212" text-anchor="middle">Linear 256 → 768  ·  <tspan class="fld">attn_qkv</tspan>  ·  fused Q, K, V</text>
+
+  <!-- fan out to Q / K / V -->
+  <path class="flow" d="M692,224 V232 H526 V234" marker-end="url(#arw)"/>
+  <path class="flow" d="M692,224 V232 H858 V234" marker-end="url(#arw)"/>
+  <path class="flow" d="M692,224 V234" marker-end="url(#arw)"/>
+
+  <rect class="box2" x="452" y="240" width="148" height="44" rx="7"/>
+  <text class="lbl" x="526" y="262" text-anchor="middle">Queries</text>
+  <text class="dim" x="526" y="277" text-anchor="middle">Q · [B, 4, S, 64]</text>
+
+  <rect class="box2" x="618" y="240" width="148" height="44" rx="7"/>
+  <text class="lbl" x="692" y="262" text-anchor="middle">Keys</text>
+  <text class="dim" x="692" y="277" text-anchor="middle">K · [B, 4, S, 64]</text>
+
+  <rect class="box2" x="784" y="240" width="148" height="44" rx="7"/>
+  <text class="lbl" x="858" y="262" text-anchor="middle">Values</text>
+  <text class="dim" x="858" y="277" text-anchor="middle">V · [B, 4, S, 64]</text>
+
+  <!-- Q,K into QK norm; V bypasses straight down -->
+  <path class="flow" d="M526,284 V294" marker-end="url(#arw)"/>
+  <path class="flow" d="M692,284 V294" marker-end="url(#arw)"/>
+  <path class="flow" d="M858,284 V388" marker-end="url(#arw)"/>
+
+  <rect class="box" x="452" y="300" width="314" height="32" rx="7"/>
+  <text class="lbl" x="609" y="321" text-anchor="middle">RMS norm on Q, K  ·  no learned parameters</text>
+
+  <path class="flow" d="M609,332 V342" marker-end="url(#arw)"/>
+
+  <rect class="box" x="452" y="348" width="314" height="32" rx="7"/>
+  <text class="lbl" x="609" y="369" text-anchor="middle">RoPE on Q, K  ·  base 10 000</text>
+
+  <path class="flow" d="M609,380 V390" marker-end="url(#arw)"/>
+
+  <rect class="box" x="452" y="396" width="480" height="46" rx="7"/>
+  <text class="lbl" x="692" y="417" text-anchor="middle">softmax( QKᵀ / √64  +  causal mask ) · V</text>
+  <text class="dim" x="692" y="434" text-anchor="middle">[B, 4, S, 64] → [B, S, 256]</text>
+
+  <path class="flow" d="M692,442 V452" marker-end="url(#arw)"/>
+
+  <rect class="box" x="452" y="458" width="480" height="34" rx="7"/>
+  <text class="lbl" x="692" y="480" text-anchor="middle">Linear 256 → 256  ·  <tspan class="fld">attn_proj</tspan>  ·  dropout 0.1</text>
+
+  <path class="flow" d="M692,492 V503" marker-end="url(#arw)"/>
+
+  <circle cx="692" cy="520" r="15" fill="var(--bg)" stroke="var(--accent)" stroke-width="1.6"/>
+  <path class="res" d="M683,520 H701 M692,511 V529"/>
+
+  <path class="flow" d="M692,535 V546" marker-end="url(#arw)"/>
+  <circle cx="692" cy="543" r="3.2" fill="var(--accent)"/>
+
+  <rect class="box" x="452" y="552" width="480" height="32" rx="7"/>
+  <text class="lbl" x="692" y="573" text-anchor="middle">Layer norm  ·  <tspan class="fld">ln2</tspan></text>
+
+  <path class="flow" d="M692,584 V594" marker-end="url(#arw)"/>
+
+  <rect class="box" x="452" y="600" width="480" height="46" rx="7"/>
+  <text class="lbl" x="692" y="621" text-anchor="middle">Linear 256 → 1024  ·  GELU  ·  Linear 1024 → 256</text>
+  <text class="dim" x="692" y="638" text-anchor="middle">ffn_up, ffn_down · dropout 0.1</text>
+
+  <path class="flow" d="M692,646 V661" marker-end="url(#arw)"/>
+
+  <circle cx="692" cy="678" r="15" fill="var(--bg)" stroke="var(--accent)" stroke-width="1.6"/>
+  <path class="res" d="M683,678 H701 M692,669 V687"/>
+
+  <path class="flow" d="M692,693 V724" marker-end="url(#arw)"/>
+  <text class="note" x="706" y="716">to next block</text>
+
+  <!-- residual bypasses -->
+  <path class="res" d="M692,116 H434 V520 H671" marker-end="url(#arwA)"/>
+  <text class="acc" x="426" y="330" text-anchor="middle" transform="rotate(-90 426 330)">residual</text>
+
+  <path class="res" d="M692,543 H946 V678 H713" marker-end="url(#arwA)"/>
+  <text class="acc" x="954" y="614" text-anchor="middle" transform="rotate(90 954 614)">residual</text>
+
+  <!-- ============ footnote ============ -->
+  <text class="note" x="56" y="767">Sentence-case labels name the operation; monospace names are the fields in model.rs, alongside the tensor shapes.</text>
+  <text class="note" x="56" y="784">Pre-norm blocks · RoPE tables and the causal mask are rebuilt every forward pass and shared across blocks · the output projection is untied from the token embedding.</text>
+  <text class="note" x="56" y="801">Sizes are the default configuration in train.rs — every model saves its own ModelConfig, so a differently sized model shifts them.</text>
+</svg>

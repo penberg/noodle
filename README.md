@@ -132,6 +132,14 @@ The fine-tuned model is saved to the output directory and can be used with the `
 > cargo run --release chat models/noodle-finetuned/model.mpk
 ```
 
+## Model Architecture
+
+Noodle is a pre-norm, decoder-only transformer: rotary position embeddings, parameter-free RMS norm on the queries and keys, and a GELU feed-forward network. The diagram below shows the full stack on the left and a single transformer block expanded on the right — names in monospace are the fields in [`model.rs`](model.rs), and the sizes are the default configuration from [`train.rs`](train.rs).
+
+<p align="center">
+  <img src="docs/model.svg" alt="Noodle model architecture: input tokens flow through a token embedding, four pre-norm transformer blocks, a final layer norm and an output projection to logits. Each block applies a fused QKV linear, parameter-free RMS norm on Q and K, rotary position embeddings, masked softmax attention and a GELU feed-forward network, both wrapped in residual connections." width="900px">
+</p>
+
 ## License
 
 This project is licensed under the [MIT license].

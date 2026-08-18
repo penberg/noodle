@@ -2,6 +2,9 @@
 name = "noodle"
 version = "0.1.0"
 edition = "2024"
+# Benchmark targets are declared explicitly below so `benches/common.rs` stays a
+# shared module instead of being picked up as a benchmark of its own.
+autobenches = false
 
 [[bin]]
 name = "noodle"
@@ -10,6 +13,16 @@ path = "main.rs"
 [lib]
 name = "noodle"
 path = "lib.rs"
+
+[[bench]]
+name = "inference"
+path = "benches/inference.rs"
+harness = false
+
+[[bench]]
+name = "training"
+path = "benches/training.rs"
+harness = false
 
 [dependencies]
 argh = "0.1"
@@ -20,3 +33,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiktoken-rs = "0.6"
 wgpu = "24"
+
+[dev-dependencies]
+criterion = "0.8"

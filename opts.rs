@@ -8,34 +8,28 @@ pub struct Opts {
     pub command: Cmd,
 }
 
+/// Wrapper around [`noodle::Backend`] so argh can parse it: the trait and the type
+/// both live outside this crate, so the impl needs a local type to hang off.
 #[derive(Clone, Copy, Debug, Default)]
-pub enum Backend {
-    #[default]
-    Gpu,
-    Cuda,
-    Cpu,
+pub struct Backend(noodle::Backend);
+
+impl Backend {
+    /// Backend to use when `--backend` is absent: whatever `NOODLE_BACKEND` says,
+    /// or the library default.
+    pub fn from_env() -> Self {
+        Backend(noodle::Backend::from_env())
+    }
 }
 
 impl argh::FromArgValue for Backend {
     fn from_arg_value(value: &str) -> Result<Self, String> {
-        match value {
-            "gpu" => Ok(Backend::Gpu),
-            "cuda" => Ok(Backend::Cuda),
-            "cpu" => Ok(Backend::Cpu),
-            _ => Err(format!(
-                "unknown backend '{value}' (expected one of: gpu, cuda, cpu)"
-            )),
-        }
+        value.parse().map(Backend)
     }
 }
 
 impl From<Backend> for noodle::Backend {
     fn from(backend: Backend) -> Self {
-        match backend {
-            Backend::Gpu => noodle::Backend::Wgpu,
-            Backend::Cuda => noodle::Backend::Cuda,
-            Backend::Cpu => noodle::Backend::Cpu,
-        }
+        backend.0
     }
 }
 
@@ -61,7 +55,7 @@ pub struct TrainCmd {
     pub output: PathBuf,
 
     /// backend to use for training (gpu, cuda, cpu)
-    #[argh(option, default = "Backend::Gpu")]
+    #[argh(option, default = "Backend::from_env()")]
     pub backend: Backend,
 
     /// maximum number of training epochs
@@ -82,7 +76,7 @@ pub struct EvalCmd {
     pub corpus: PathBuf,
 
     /// backend to use for evaluation (gpu, cuda, cpu)
-    #[argh(option, default = "Backend::Gpu")]
+    #[argh(option, default = "Backend::from_env()")]
     pub backend: Backend,
 }
 
@@ -103,7 +97,7 @@ pub struct FinetuneCmd {
     pub output: PathBuf,
 
     /// backend to use for training (gpu, cuda, cpu)
-    #[argh(option, default = "Backend::Gpu")]
+    #[argh(option, default = "Backend::from_env()")]
     pub backend: Backend,
 
     /// maximum number of fine-tuning epochs
@@ -120,6 +114,6 @@ pub struct ChatCmd {
     pub model: PathBuf,
 
     /// backend to use for inference (gpu, cuda, cpu)
-    #[argh(option, default = "Backend::Gpu")]
+    #[argh(option, default = "Backend::from_env()")]
     pub backend: Backend,
 }

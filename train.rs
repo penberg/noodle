@@ -10,7 +10,7 @@ use burn::{
 use serde_json;
 
 use crate::{
-    Result,
+    CorpusSource, Result,
     model::{ModelConfig, Trainer},
     tokenizer::Tokenizer,
 };
@@ -38,7 +38,7 @@ const MIN_IMPROVEMENT: f32 = 0.01;
 const VAL_SPLIT: f32 = 0.1;
 
 pub fn train(
-    input: &Path,
+    input: &CorpusSource,
     output: &Path,
     backend: crate::Backend,
     max_epochs: usize,
@@ -61,7 +61,8 @@ pub fn train(
     eprintln!("Saved config to {}", config_path.display());
 
     let tokenizer = Tokenizer::new()?;
-    let tokens = tokenizer.encode_file(input)?;
+    eprintln!("Loading corpus from {}...", input);
+    let tokens = tokenizer.encode_reader(input.open()?)?;
     eprintln!("Loaded {} tokens", tokens.len());
 
     match backend {

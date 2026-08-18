@@ -4054,6 +4054,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tiktoken-rs",
+ "ureq",
  "wgpu 24.0.5",
 ]
 

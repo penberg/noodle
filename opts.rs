@@ -1,5 +1,10 @@
 use argh::FromArgs;
+use noodle::CorpusSource;
 use std::path::PathBuf;
+
+fn parse_corpus(value: &str) -> Result<CorpusSource, String> {
+    CorpusSource::parse(value).map_err(|e| e.to_string())
+}
 
 /// A small language model
 #[derive(FromArgs)]
@@ -46,9 +51,9 @@ pub enum Cmd {
 #[derive(FromArgs)]
 #[argh(subcommand, name = "train")]
 pub struct TrainCmd {
-    /// input text file
-    #[argh(positional)]
-    pub input: PathBuf,
+    /// input text file, URL, or hf://owner/repo/file (streamed from HuggingFace)
+    #[argh(positional, from_str_fn(parse_corpus))]
+    pub input: CorpusSource,
 
     /// output directory for model files
     #[argh(positional)]
@@ -71,9 +76,9 @@ pub struct EvalCmd {
     #[argh(positional)]
     pub model: PathBuf,
 
-    /// test corpus file
-    #[argh(positional)]
-    pub corpus: PathBuf,
+    /// test corpus file, URL, or hf://owner/repo/file (streamed from HuggingFace)
+    #[argh(positional, from_str_fn(parse_corpus))]
+    pub corpus: CorpusSource,
 
     /// backend to use for evaluation (gpu, cuda, cpu)
     #[argh(option, default = "Backend::from_env()")]
@@ -88,9 +93,9 @@ pub struct FinetuneCmd {
     #[argh(positional)]
     pub model: PathBuf,
 
-    /// input instruction text file
-    #[argh(positional)]
-    pub input: PathBuf,
+    /// input instruction text file, URL, or hf://owner/repo/file (streamed from HuggingFace)
+    #[argh(positional, from_str_fn(parse_corpus))]
+    pub input: CorpusSource,
 
     /// output directory for fine-tuned model
     #[argh(positional)]

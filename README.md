@@ -17,9 +17,9 @@ training time with `--model`:
 
 | preset | size | |
 |---|---|---|
-| **Sōmen** (`--model somen`) | ~29M | The thinnest noodle, cooked in about ninety seconds: a smoke-test model for verifying the pipeline quickly, and the default. Not a real model. |
-| **Soba** (`--model soba`) | ~0.6B | The everyday noodle, for real training runs while iterating. Mirrors the shape of Qwen3-0.6B. |
-| **Udon** (`--model udon`) | ~27B | The thick noodle: the target model, in a Llama-33B-class shape. |
+| **Sōmen** | ~29M | The thinnest noodle, cooked in about ninety seconds: a smoke-test model for verifying the pipeline quickly, and the default. Not a real model. |
+| **Soba** | ~0.6B | The everyday noodle, for real training runs while iterating. |
+| **Udon** | ~27B | The thick noodle: the target model that runs on on-device. |
 
 The preset only picks the architecture — number of layers, embedding width, attention
 heads, and so on. The model directory's `model.json` records those actual numbers

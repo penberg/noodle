@@ -4,7 +4,7 @@ use burn::{
     backend::{Cuda, NdArray, Wgpu, cuda::CudaDevice, ndarray::NdArrayDevice, wgpu::WgpuDevice},
     nn::loss::CrossEntropyLossConfig,
     prelude::Backend,
-    tensor::{ElementConversion, Int, Tensor, TensorData},
+    tensor::{ElementConversion, Int, Tensor, TensorData, bf16, f16},
 };
 
 use crate::{
@@ -50,16 +50,43 @@ pub fn eval(model_path: &Path, corpus: &CorpusSource, backend: crate::Backend) -
         crate::Backend::Wgpu => {
             let device = WgpuDevice::default();
             eprintln!("Using wgpu device: {:?}", device);
-            eval_loop::<Wgpu<f32, i32>>(model_path, &tokens, ctx_len, num_batches, device)
+            let precision = crate::inference_precision::<Wgpu<f32, i32>>(&device);
+            eprintln!("Inference precision: {}", precision);
+            match precision {
+                crate::Precision::Bf16 => {
+                    eval_loop::<Wgpu<bf16, i32>>(model_path, &tokens, ctx_len, num_batches, device)
+                }
+                crate::Precision::F16 => {
+                    eval_loop::<Wgpu<f16, i32>>(model_path, &tokens, ctx_len, num_batches, device)
+                }
+                crate::Precision::F32 => {
+                    eval_loop::<Wgpu<f32, i32>>(model_path, &tokens, ctx_len, num_batches, device)
+                }
+            }
         }
         crate::Backend::Cuda => {
             let device = CudaDevice::default();
             eprintln!("Using CUDA device: {:?}", device);
-            eval_loop::<Cuda<f32, i32>>(model_path, &tokens, ctx_len, num_batches, device)
+            let precision = crate::inference_precision::<Cuda<f32, i32>>(&device);
+            eprintln!("Inference precision: {}", precision);
+            match precision {
+                crate::Precision::Bf16 => {
+                    eval_loop::<Cuda<bf16, i32>>(model_path, &tokens, ctx_len, num_batches, device)
+                }
+                crate::Precision::F16 => {
+                    eval_loop::<Cuda<f16, i32>>(model_path, &tokens, ctx_len, num_batches, device)
+                }
+                crate::Precision::F32 => {
+                    eval_loop::<Cuda<f32, i32>>(model_path, &tokens, ctx_len, num_batches, device)
+                }
+            }
         }
         crate::Backend::Cpu => {
+            // NdArray has no half-precision element types, so there is nothing
+            // to probe for.
             let device = NdArrayDevice::default();
             eprintln!("Using CPU device: {:?}", device);
+            eprintln!("Inference precision: f32");
             eval_loop::<NdArray<f32>>(model_path, &tokens, ctx_len, num_batches, device)
         }
     }

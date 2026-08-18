@@ -5,7 +5,7 @@ use burn::{
         Autodiff, Cuda, NdArray, Wgpu, cuda::CudaDevice, ndarray::NdArrayDevice, wgpu::WgpuDevice,
     },
     module::AutodiffModule,
-    tensor::{Int, Tensor, TensorData, backend::AutodiffBackend},
+    tensor::{Int, Tensor, TensorData, backend::AutodiffBackend, bf16},
 };
 
 use crate::{
@@ -212,20 +212,45 @@ pub fn finetune(
         crate::Backend::Wgpu => {
             let device = WgpuDevice::default();
             eprintln!("Using wgpu device: {:?}", device);
-            finetune_loop::<Autodiff<Wgpu<f32, i32>>>(
-                model_path, config, &examples, output, device, max_epochs,
-            )
+            match crate::training_precision::<Wgpu<f32, i32>>(&device) {
+                crate::Precision::Bf16 => {
+                    eprintln!("Training precision: bf16");
+                    finetune_loop::<Autodiff<Wgpu<bf16, i32>>>(
+                        model_path, config, &examples, output, device, max_epochs,
+                    )
+                }
+                _ => {
+                    eprintln!("Training precision: f32");
+                    finetune_loop::<Autodiff<Wgpu<f32, i32>>>(
+                        model_path, config, &examples, output, device, max_epochs,
+                    )
+                }
+            }
         }
         crate::Backend::Cuda => {
             let device = CudaDevice::default();
             eprintln!("Using CUDA device: {:?}", device);
-            finetune_loop::<Autodiff<Cuda<f32, i32>>>(
-                model_path, config, &examples, output, device, max_epochs,
-            )
+            match crate::training_precision::<Cuda<f32, i32>>(&device) {
+                crate::Precision::Bf16 => {
+                    eprintln!("Training precision: bf16");
+                    finetune_loop::<Autodiff<Cuda<bf16, i32>>>(
+                        model_path, config, &examples, output, device, max_epochs,
+                    )
+                }
+                _ => {
+                    eprintln!("Training precision: f32");
+                    finetune_loop::<Autodiff<Cuda<f32, i32>>>(
+                        model_path, config, &examples, output, device, max_epochs,
+                    )
+                }
+            }
         }
         crate::Backend::Cpu => {
+            // NdArray has no half-precision element types, so there is nothing
+            // to probe for.
             let device = NdArrayDevice::default();
             eprintln!("Using CPU device: {:?}", device);
+            eprintln!("Training precision: f32");
             finetune_loop::<Autodiff<NdArray<f32>>>(
                 model_path, config, &examples, output, device, max_epochs,
             )
@@ -252,9 +277,11 @@ fn finetune_loop<B: AutodiffBackend>(
         )));
     }
 
-    // Load pre-trained model and wrap in trainer with fresh optimizer
+    // Load pre-trained model and wrap in trainer with fresh optimizer. The
+    // training load path restores the stored Q8F weights to float: gradients
+    // do not flow through quantized tensors.
     eprintln!("Loading pre-trained model from {}...", model_path.display());
-    let model: Model<B> = Model::load(model_path, &device)?;
+    let model: Model<B> = Model::load_for_training(model_path, &device)?;
     let mut trainer: Trainer<B> = Trainer::from_model(model, config, &device);
 
     // Scale learning rate linearly with batch size

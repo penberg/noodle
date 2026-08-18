@@ -13,12 +13,57 @@ pub use inference::generate_next_token;
 pub use tokenizer::{Token, Tokenizer};
 pub use train::train;
 
-#[derive(Clone, Copy, Debug, Default)]
+/// Environment variable that selects the backend when nothing else does.
+///
+/// The `noodle` binary reads it as the fallback for `--backend`, and the benchmarks
+/// read it as their only knob, so one variable picks the backend everywhere.
+pub const BACKEND_ENV: &str = "NOODLE_BACKEND";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Backend {
     #[default]
     Wgpu,
     Cuda,
     Cpu,
+}
+
+impl Backend {
+    /// Short name for the backend, used in log lines and benchmark ids.
+    pub fn name(self) -> &'static str {
+        match self {
+            Backend::Wgpu => "wgpu",
+            Backend::Cuda => "cuda",
+            Backend::Cpu => "cpu",
+        }
+    }
+
+    /// Backend named by [`BACKEND_ENV`], or the default if the variable is unset.
+    ///
+    /// Panics on an unknown name rather than silently falling back: a typo that
+    /// quietly ran on the wrong backend would make timings and logs misleading.
+    pub fn from_env() -> Self {
+        match std::env::var(BACKEND_ENV) {
+            Ok(value) => value
+                .parse()
+                .unwrap_or_else(|e| panic!("{BACKEND_ENV}: {e}")),
+            Err(_) => Backend::default(),
+        }
+    }
+}
+
+impl std::str::FromStr for Backend {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "gpu" | "wgpu" => Ok(Backend::Wgpu),
+            "cuda" => Ok(Backend::Cuda),
+            "cpu" | "ndarray" => Ok(Backend::Cpu),
+            other => Err(format!(
+                "unknown backend '{other}' (expected one of: gpu, cuda, cpu)"
+            )),
+        }
+    }
 }
 
 #[derive(Debug)]

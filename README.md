@@ -123,7 +123,8 @@ The fine-tuning command takes the following arguments:
 
 Optional flags:
 
-- `--backend` — Backend to use for training: `gpu` (default), `cuda`, or `cpu`
+- `--backend` — Backend to use for training: `gpu` (default), `cuda`, or `cpu`.
+  Defaults to `$NOODLE_BACKEND` when set
 - `--max-epochs` — Maximum number of fine-tuning epochs (default: `5`)
 
 The fine-tuned model is saved to the output directory and can be used with the `chat` command:

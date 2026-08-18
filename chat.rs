@@ -7,6 +7,7 @@ use burn::backend::wgpu::WgpuDevice;
 use burn::backend::{Cuda, NdArray, Wgpu};
 use burn::prelude::Backend;
 
+use noodle::Session;
 use noodle::Tokenizer;
 use noodle::inference::SamplingConfig;
 use noodle::model::Model;
@@ -37,6 +38,10 @@ fn chat_loop<B: Backend>(model_path: &Path, device: B::Device) -> noodle::Result
     let model = Model::<B>::load(model_path, &device)?;
     let tokenizer = Tokenizer::new()?;
 
+    // The session owns the key/value cache, so it persists across turns: each generated
+    // token costs one position of work rather than a pass over the whole conversation.
+    let mut session = Session::new(model, device);
+
     println!();
     println!(" ~(°◡°)~  Noodle");
     println!();
@@ -50,8 +55,6 @@ fn chat_loop<B: Backend>(model_path: &Path, device: B::Device) -> noodle::Result
     let config = SamplingConfig::default();
     let max_tokens = 100;
 
-    let mut history: Vec<noodle::Token> = Vec::new();
-
     loop {
         print!("> ");
         stdout.flush()?;
@@ -61,19 +64,23 @@ fn chat_loop<B: Backend>(model_path: &Path, device: B::Device) -> noodle::Result
             break; // EOF
         }
 
-        let input_tokens = tokenizer.encode(input.trim());
-        history.extend_from_slice(&input_tokens);
+        session.push(&tokenizer.encode(input.trim()));
+
+        // Nothing said yet and nothing to continue from
+        if session.is_empty() {
+            continue;
+        }
 
         // Generate tokens one at a time, streaming output
         for _ in 0..max_tokens {
-            let next_token =
-                noodle::generate_next_token(&model, &history, &config, &device, &mut rng);
+            let next_token = session.next_token(&config, &mut rng);
 
             if next_token == EOS_TOKEN {
+                // Keep it out of the conversation: it would be context for the next turn
+                // and would count against the repetition penalty.
+                session.discard_last();
                 break;
             }
-
-            history.push(next_token);
 
             // Decode and print just this token
             let token_text = tokenizer.decode(&[next_token])?;

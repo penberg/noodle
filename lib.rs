@@ -11,7 +11,7 @@ pub mod train;
 pub use corpus::CorpusSource;
 pub use eval::eval;
 pub use finetune::finetune;
-pub use inference::generate_next_token;
+pub use inference::Session;
 pub use tokenizer::{Token, Tokenizer};
 pub use train::train;
 

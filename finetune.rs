@@ -435,20 +435,20 @@ fn finetune_loop<B: AutodiffBackend>(
     let test_prompt = "What is machine learning?";
     let tokenizer = Tokenizer::new()?;
     let prompt_tokens = tokenizer.encode(test_prompt);
-    let inner_model = trainer.model.clone().valid();
+    let inner_model = trainer.model.valid();
     let mut rng = rand::thread_rng();
     let sampling_config = crate::inference::SamplingConfig::default();
 
-    let mut tokens = prompt_tokens.clone();
+    let mut session = crate::Session::new(inner_model, device.clone());
+    session.push(&prompt_tokens);
     for _ in 0..50 {
-        let next =
-            crate::generate_next_token(&inner_model, &tokens, &sampling_config, &device, &mut rng);
-        if next == EOS_TOKEN {
+        if session.next_token(&sampling_config, &mut rng) == EOS_TOKEN {
+            // Dropped so it does not show up in the decoded sample below.
+            session.discard_last();
             break;
         }
-        tokens.push(next);
     }
-    let generated = tokenizer.decode(&tokens)?;
+    let generated = tokenizer.decode(session.history())?;
     eprintln!("Test: \"{}\" -> \"{}\"", test_prompt, generated);
     eprintln!(
         "Fine-tuning complete. Best model saved to {}",

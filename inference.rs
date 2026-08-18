@@ -165,9 +165,12 @@ impl<B: Backend> Session<B> {
             logits.expect("at least one uncached token")
         };
 
+        // Sampling happens on the host in f32 whatever precision the model
+        // computes in, so convert rather than assume the backend's float type.
         logits
             .reshape([self.model.vocab_size()])
             .into_data()
+            .convert::<f32>()
             .to_vec::<f32>()
             .unwrap()
     }

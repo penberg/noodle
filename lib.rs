@@ -68,6 +68,55 @@ impl std::str::FromStr for Backend {
     }
 }
 
+/// Floating-point width for model compute, chosen at runtime from what the
+/// device actually supports rather than hard-coded per backend: the same wgpu
+/// build lands on different hardware, and NdArray simply has no half types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Precision {
+    Bf16,
+    F16,
+    F32,
+}
+
+impl std::fmt::Display for Precision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Precision::Bf16 => write!(f, "bf16"),
+            Precision::F16 => write!(f, "f16"),
+            Precision::F32 => write!(f, "f32"),
+        }
+    }
+}
+
+/// Precision to train at on `device`: bf16 when the device supports it, f32
+/// otherwise. Only bf16 is considered for the reduced option because it keeps
+/// f32's exponent range, so training needs no loss scaling; f16 would.
+pub fn training_precision<B: burn::prelude::Backend>(device: &B::Device) -> Precision {
+    use burn::tensor::DType;
+
+    if B::supports_dtype(device, DType::BF16) {
+        Precision::Bf16
+    } else {
+        Precision::F32
+    }
+}
+
+/// Precision to run inference at on `device`: the narrowest supported float,
+/// probing bf16, then f16, then falling back to f32. Inference is a forward
+/// pass only, so f16's small exponent range is acceptable where bf16 is not
+/// available (WGSL has no bf16, but many adapters expose shader f16).
+pub fn inference_precision<B: burn::prelude::Backend>(device: &B::Device) -> Precision {
+    use burn::tensor::DType;
+
+    if B::supports_dtype(device, DType::BF16) {
+        Precision::Bf16
+    } else if B::supports_dtype(device, DType::F16) {
+        Precision::F16
+    } else {
+        Precision::F32
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),

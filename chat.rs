@@ -6,6 +6,9 @@ use burn::backend::ndarray::NdArrayDevice;
 use burn::backend::wgpu::WgpuDevice;
 use burn::backend::{Cuda, NdArray, Wgpu};
 use burn::prelude::Backend;
+use burn::tensor::{bf16, f16};
+
+use noodle::Precision;
 
 use noodle::Session;
 use noodle::Tokenizer;
@@ -19,16 +22,31 @@ pub fn chat(model_path: &Path, backend: noodle::Backend) -> noodle::Result<()> {
         noodle::Backend::Wgpu => {
             let device = WgpuDevice::default();
             eprintln!("Using wgpu device: {:?}", device);
-            chat_loop::<Wgpu<f32, i32>>(model_path, device)
+            let precision = noodle::inference_precision::<Wgpu<f32, i32>>(&device);
+            eprintln!("Inference precision: {}", precision);
+            match precision {
+                Precision::Bf16 => chat_loop::<Wgpu<bf16, i32>>(model_path, device),
+                Precision::F16 => chat_loop::<Wgpu<f16, i32>>(model_path, device),
+                Precision::F32 => chat_loop::<Wgpu<f32, i32>>(model_path, device),
+            }
         }
         noodle::Backend::Cuda => {
             let device = CudaDevice::default();
             eprintln!("Using CUDA device: {:?}", device);
-            chat_loop::<Cuda<f32, i32>>(model_path, device)
+            let precision = noodle::inference_precision::<Cuda<f32, i32>>(&device);
+            eprintln!("Inference precision: {}", precision);
+            match precision {
+                Precision::Bf16 => chat_loop::<Cuda<bf16, i32>>(model_path, device),
+                Precision::F16 => chat_loop::<Cuda<f16, i32>>(model_path, device),
+                Precision::F32 => chat_loop::<Cuda<f32, i32>>(model_path, device),
+            }
         }
         noodle::Backend::Cpu => {
+            // NdArray has no half-precision element types, so there is nothing
+            // to probe for.
             let device = NdArrayDevice::default();
             eprintln!("Using CPU device: {:?}", device);
+            eprintln!("Inference precision: f32");
             chat_loop::<NdArray<f32>>(model_path, device)
         }
     }

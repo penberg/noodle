@@ -5,7 +5,7 @@ use burn::{
         Autodiff, Cuda, NdArray, Wgpu, cuda::CudaDevice, ndarray::NdArrayDevice, wgpu::WgpuDevice,
     },
     module::AutodiffModule,
-    tensor::{Int, Tensor, TensorData, backend::AutodiffBackend},
+    tensor::{Int, Tensor, TensorData, backend::AutodiffBackend, bf16},
 };
 use serde_json;
 
@@ -62,16 +62,45 @@ pub fn train(
         crate::Backend::Wgpu => {
             let device = WgpuDevice::default();
             eprintln!("Using wgpu device: {:?}", device);
-            train_loop::<Autodiff<Wgpu<f32, i32>>>(config, &tokens, output, device, max_epochs)
+            match crate::training_precision::<Wgpu<f32, i32>>(&device) {
+                crate::Precision::Bf16 => {
+                    eprintln!("Training precision: bf16");
+                    train_loop::<Autodiff<Wgpu<bf16, i32>>>(
+                        config, &tokens, output, device, max_epochs,
+                    )
+                }
+                _ => {
+                    eprintln!("Training precision: f32");
+                    train_loop::<Autodiff<Wgpu<f32, i32>>>(
+                        config, &tokens, output, device, max_epochs,
+                    )
+                }
+            }
         }
         crate::Backend::Cuda => {
             let device = CudaDevice::default();
             eprintln!("Using CUDA device: {:?}", device);
-            train_loop::<Autodiff<Cuda<f32, i32>>>(config, &tokens, output, device, max_epochs)
+            match crate::training_precision::<Cuda<f32, i32>>(&device) {
+                crate::Precision::Bf16 => {
+                    eprintln!("Training precision: bf16");
+                    train_loop::<Autodiff<Cuda<bf16, i32>>>(
+                        config, &tokens, output, device, max_epochs,
+                    )
+                }
+                _ => {
+                    eprintln!("Training precision: f32");
+                    train_loop::<Autodiff<Cuda<f32, i32>>>(
+                        config, &tokens, output, device, max_epochs,
+                    )
+                }
+            }
         }
         crate::Backend::Cpu => {
+            // NdArray has no half-precision element types, so there is nothing
+            // to probe for.
             let device = NdArrayDevice::default();
             eprintln!("Using CPU device: {:?}", device);
+            eprintln!("Training precision: f32");
             train_loop::<Autodiff<NdArray<f32>>>(config, &tokens, output, device, max_epochs)
         }
     }

@@ -4,15 +4,19 @@ use std::{fs, path::Path};
 
 use burn::{
     grad_clipping::GradientClippingConfig,
-    module::{AutodiffModule, Module},
+    module::{AutodiffModule, Module, ModuleMapper, Param, Quantizer},
     nn::{
         Dropout, DropoutConfig, Embedding, EmbeddingConfig, Initializer, LayerNorm,
         LayerNormConfig, Linear, LinearConfig, loss::CrossEntropyLossConfig,
     },
     optim::{AdamW, AdamWConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     prelude::Backend,
+    record::{BinBytesRecorder, FullPrecisionSettings, Recorder},
     tensor::{
-        Bool, ElementConversion, Int, Tensor, TensorData, activation, backend::AutodiffBackend,
+        Bool, DType, ElementConversion, Int, Tensor, TensorData, activation,
+        backend::AutodiffBackend,
+        ops::QuantizedTensor,
+        quantization::{Calibration, QTensorPrimitive, QuantScheme, QuantValue},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -154,6 +158,55 @@ impl ModelConfig {
     }
 }
 
+/// The Q8F quantization scheme in the representation backend `B` prefers.
+///
+/// The bytes that reach disk are the same either way — `TensorData` has one
+/// canonical quantized layout — but the quantize *kernels* run on `B`, so the
+/// scheme's storage type has to be one `B` can compute with (packed u32 on the
+/// GPU backends, native i8 on NdArray).
+fn storage_scheme<B: Backend>() -> QuantScheme {
+    <QuantizedTensor<B> as QTensorPrimitive>::default_scheme().with_value(QuantValue::Q8F)
+}
+
+/// Quantizes matrix-shaped (2D) parameters to Q8F, leaving 1D parameters —
+/// LayerNorm gains and biases — in full precision. The matrices are ~99.9% of
+/// the bytes; the norm parameters are numerically sensitive and cost nothing
+/// to keep exact.
+struct MatrixQuantizer {
+    quantizer: Quantizer,
+}
+
+impl MatrixQuantizer {
+    fn new<B: Backend>() -> Self {
+        Self {
+            quantizer: Quantizer {
+                calibration: Calibration::MinMax,
+                scheme: storage_scheme::<B>(),
+            },
+        }
+    }
+}
+
+impl<B: Backend> ModuleMapper<B> for MatrixQuantizer {
+    fn map_float<const D: usize>(&mut self, param: Param<Tensor<B, D>>) -> Param<Tensor<B, D>> {
+        if D < 2 {
+            return param;
+        }
+        ModuleMapper::<B>::map_float(&mut self.quantizer, param)
+    }
+}
+
+/// Restores quantized parameters to the backend's float type; parameters that
+/// are already float pass through untouched.
+struct Dequantizer;
+
+impl<B: Backend> ModuleMapper<B> for Dequantizer {
+    fn map_float<const D: usize>(&mut self, param: Param<Tensor<B, D>>) -> Param<Tensor<B, D>> {
+        let (id, tensor, mapper) = param.consume();
+        Param::from_mapped_value(id, tensor.dequantize(), mapper)
+    }
+}
+
 /// The language model: a decoder-only transformer neural network.
 ///
 /// This struct represents the core model architecture with token/position embeddings,
@@ -245,13 +298,62 @@ impl<B: Backend> Model<B> {
 
         let model = Self::new(&config, device);
 
-        model
+        let model = model
             .load_file(
                 path,
                 &burn::record::DefaultFileRecorder::<burn::record::FullPrecisionSettings>::new(),
                 device,
             )
-            .map_err(|e| crate::Error::Burn(e.to_string()))
+            .map_err(|e| crate::Error::Burn(e.to_string()))?;
+
+        // Checkpoints arrive with their matrices quantized (Q8F). Keep them
+        // quantized only where the device can compute with them: support for
+        // the packed-u32 representation is the probe, because that is the
+        // storage the quantized matmul kernels use. NdArray reports no packed
+        // support — it also has no quantized matmul, so leaving its weights
+        // quantized would dequantize every matrix on every forward pass;
+        // restoring floats once at load is strictly better.
+        let packed_q8 = DType::QFloat(QuantScheme::default().with_value(QuantValue::Q8F));
+        if !B::supports_dtype(device, packed_q8) {
+            eprintln!("  device has no quantized kernels, restoring weights to float");
+            return Ok(model.dequantize());
+        }
+
+        // The embedding op dequantizes its whole table on every call — once
+        // per generated token — so that one matrix is better stored as float
+        // from the start. Everything else stays Q8F in device memory.
+        let Self {
+            token_emb,
+            blocks,
+            ln_f,
+            output,
+            ctx_len,
+            vocab_size,
+            head_dim,
+        } = model;
+
+        Ok(Self {
+            token_emb: token_emb.map(&mut Dequantizer),
+            blocks,
+            ln_f,
+            output,
+            ctx_len,
+            vocab_size,
+            head_dim,
+        })
+    }
+
+    /// Restore every parameter to the backend's float type. Inference can run
+    /// on quantized weights; training cannot, since gradients do not flow
+    /// through quantized tensors.
+    pub fn dequantize(self) -> Self {
+        self.map(&mut Dequantizer)
+    }
+
+    /// Quantize the matrix parameters to Q8F, the form every checkpoint takes
+    /// on disk.
+    fn quantize(self) -> Self {
+        self.map(&mut MatrixQuantizer::new::<B>())
     }
 
     pub fn ctx_len(&self) -> usize {
@@ -348,6 +450,32 @@ impl<B: Backend> Model<B> {
         let x = self.output.forward(x);
 
         x.reshape([1, self.vocab_size])
+    }
+}
+
+impl<B: AutodiffBackend> Model<B> {
+    /// Load a checkpoint to train further, rather than to run.
+    ///
+    /// Checkpoints hold quantized weights, and autodiff backends cannot
+    /// materialize quantized tensors (gradients could not flow through them
+    /// anyway), so [`Model::load`] on `B` would panic inside the recorder.
+    /// Instead the checkpoint is loaded on the inner backend, every weight is
+    /// restored to float, and the float record is lifted into the autodiff
+    /// wrapper. Records are typed per backend, so the lift is an in-memory
+    /// serialization round trip — the one backend-agnostic form a record has.
+    pub fn load_for_training(path: &Path, device: &B::Device) -> Result<Self> {
+        let inner: Model<B::InnerBackend> = Model::load(path, device)?.dequantize();
+
+        let recorder = BinBytesRecorder::<FullPrecisionSettings>::default();
+        let bytes = recorder
+            .record(inner.into_record(), ())
+            .map_err(|e| crate::Error::Burn(e.to_string()))?;
+        let record = recorder
+            .load(bytes, device)
+            .map_err(|e| crate::Error::Burn(e.to_string()))?;
+
+        let config = ModelConfig::load(path)?;
+        Ok(Model::new(&config, device).load_record(record))
     }
 }
 
@@ -828,11 +956,14 @@ impl<B: AutodiffBackend> Trainer<B> {
         loss.into_scalar().elem()
     }
 
-    /// Save model weights and config
+    /// Save model weights and config. Matrix weights go to disk quantized to
+    /// Q8F — about a quarter the size of the f32 checkpoint they replace —
+    /// while the in-memory model keeps training at full precision.
     pub fn save(&self, path: &Path) -> Result<()> {
         self.config.save(path)?;
         self.model
-            .clone()
+            .valid()
+            .quantize()
             .save_file(
                 path,
                 &burn::record::DefaultFileRecorder::<burn::record::FullPrecisionSettings>::new(),
@@ -978,5 +1109,133 @@ mod tests {
         let json = serde_json::to_string(&ModelConfig::somen()).unwrap();
         let config: ModelConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config.preset.as_deref(), Some("Sōmen"));
+    }
+
+    fn tiny_config() -> ModelConfig {
+        ModelConfig {
+            preset: None,
+            n_layers: 2,
+            emb_dim: 32,
+            n_heads: 2,
+            head_dim: 16,
+            hidden_dim: 128,
+            ctx_len: 16,
+            vocab_size: 64,
+        }
+    }
+
+    /// Largest absolute difference between two same-shaped parameter tensors.
+    fn max_abs_diff<B: Backend, const D: usize>(a: Tensor<B, D>, b: Tensor<B, D>) -> f32 {
+        (a - b).abs().max().into_scalar().elem()
+    }
+
+    /// Checkpoints store their matrix weights quantized to Q8F. Saving and
+    /// loading again must shrink the file to roughly a quarter of the float
+    /// checkpoint, reproduce the weights to within quantization error, and
+    /// leave the model able to run a forward pass. Full-precision checkpoints
+    /// from before quantization must also keep loading.
+    #[test]
+    fn quantized_checkpoint_round_trips() {
+        use burn::backend::Autodiff;
+        type B = NdArray<f32>;
+
+        let device = NdArrayDevice::default();
+        let config = tiny_config();
+
+        let dir = std::env::temp_dir().join(format!("noodle-quant-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let trainer: Trainer<Autodiff<B>> = Trainer::new(config.clone(), &device);
+        let original = trainer.model.valid();
+
+        let quant_path = dir.join("model.mpk");
+        trainer.save(&quant_path).unwrap();
+
+        // The same weights unquantized, standing in for a pre-quantization
+        // checkpoint: the size comparison and the compatibility check both
+        // need one.
+        let float_path = dir.join("float.mpk");
+        config.save(&float_path).unwrap();
+        original
+            .clone()
+            .save_file(
+                &float_path,
+                &burn::record::DefaultFileRecorder::<burn::record::FullPrecisionSettings>::new(),
+            )
+            .unwrap();
+
+        let quant_size = std::fs::metadata(&quant_path).unwrap().len();
+        let float_size = std::fs::metadata(&float_path).unwrap().len();
+        assert!(
+            quant_size < float_size / 3,
+            "quantized checkpoint ({quant_size} bytes) should be under a third \
+             of the float checkpoint ({float_size} bytes)"
+        );
+
+        // Per-tensor symmetric 8-bit quantization has a worst-case error of
+        // half a step, max|w| / 254; for these initializations that is well
+        // under 0.01.
+        let loaded = Model::<B>::load(&quant_path, &device).unwrap();
+        let diff = max_abs_diff(
+            loaded.output.weight.val(),
+            original.output.weight.val().clone(),
+        );
+        assert!(diff < 0.01, "output weight moved {diff} in the round trip");
+
+        let logits = loaded.forward(
+            Tensor::from_data(TensorData::new(vec![1i32, 2, 3], [1, 3]), &device),
+            &device,
+        );
+        assert!(
+            logits
+                .into_data()
+                .to_vec::<f32>()
+                .unwrap()
+                .iter()
+                .all(|l| l.is_finite()),
+            "forward pass after the round trip produced non-finite logits"
+        );
+
+        // A float checkpoint has no quantized tensors to restore; loading it
+        // must reproduce the weights exactly.
+        let loaded_float = Model::<B>::load(&float_path, &device).unwrap();
+        let diff = max_abs_diff(
+            loaded_float.output.weight.val(),
+            original.output.weight.val(),
+        );
+        assert_eq!(diff, 0.0, "float checkpoint no longer loads exactly");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Fine-tuning loads through the autodiff wrapper, which cannot hold
+    /// quantized tensors: the load path must hand back float weights that
+    /// match the checkpoint.
+    #[test]
+    fn quantized_checkpoint_loads_for_training() {
+        use burn::backend::Autodiff;
+        type B = NdArray<f32>;
+
+        let device = NdArrayDevice::default();
+        let config = tiny_config();
+
+        let dir = std::env::temp_dir().join(format!(
+            "noodle-quant-train-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let trainer: Trainer<Autodiff<B>> = Trainer::new(config, &device);
+        let path = dir.join("model.mpk");
+        trainer.save(&path).unwrap();
+
+        let loaded = Model::<Autodiff<B>>::load_for_training(&path, &device).unwrap();
+        let diff = max_abs_diff(
+            loaded.output.weight.val().inner(),
+            trainer.model.valid().output.weight.val(),
+        );
+        assert!(diff < 0.01, "output weight moved {diff} through the lift");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

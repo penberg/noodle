@@ -26,14 +26,15 @@ harness = false
 
 [dependencies]
 argh = "0.1"
-burn = { version = "0.20", features = ["wgpu", "cuda", "ndarray", "autodiff", "train"] }
+burn = { version = "0.21", features = ["wgpu", "cuda", "ndarray", "autodiff", "train"] }
 env_logger = "0.11"
+futures-lite = "2"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiktoken-rs = "0.6"
 ureq = "2"
-wgpu = "24"
+wgpu = "29"
 
 [dev-dependencies]
 criterion = "0.8"

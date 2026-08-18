@@ -141,6 +141,50 @@ Noodle is a pre-norm, decoder-only transformer: rotary position embeddings, para
   <img src="docs/model.svg" alt="Noodle model architecture: input tokens flow through a token embedding, four pre-norm transformer blocks, a final layer norm and an output projection to logits. Each block applies a fused QKV linear, parameter-free RMS norm on Q and K, rotary position embeddings, masked softmax attention and a GELU feed-forward network, both wrapped in residual connections." width="900px">
 </p>
 
+## Benchmarks
+
+Noodle ships [Criterion](https://github.com/bheisler/criterion.rs) benchmarks for the two
+hot paths: inference and training. Run them with:
+
+```console
+> cargo bench                      # both suites
+> cargo bench --bench inference    # forward pass and single-token generation
+> cargo bench --bench training     # train step and eval step
+```
+
+The `inference` suite measures the model's forward pass and `generate_next_token` (forward
+pass plus repetition penalty and top-k/top-p sampling). The `training` suite measures a
+full optimizer step — forward, loss, backward, AdamW update — alongside the forward-only
+validation step, so the cost of the backward pass and the optimizer update is visible by
+comparison.
+
+Every benchmark uses the canonical Noodle hyperparameters (4 layers, `d_model=256`,
+4 heads, p50k_base vocabulary) on randomly initialized weights, and runs at a full
+256-token context with the batch size its caller uses: 1 for inference, 8 for training.
+
+Like the `noodle` commands themselves, benchmarks run on the wgpu backend by default.
+Benchmarks have no command line of their own, so they take the backend from
+`NOODLE_BACKEND` — the same variable the `noodle` commands read when `--backend` is
+omitted:
+
+```console
+> NOODLE_BACKEND=cuda cargo bench --bench training   # CUDA
+> NOODLE_BACKEND=cpu cargo bench --bench inference   # CPU (ndarray)
+```
+
+The backend name is part of every benchmark id, so results from different backends don't
+overwrite each other's baselines.
+
+You can filter to a single case by name, which is useful while iterating on one code path:
+
+```console
+> cargo bench --bench inference -- forward
+```
+
+Criterion compares each run against the previous one and reports the change, so the usual
+workflow is to benchmark on `main`, apply a change, and benchmark again. Full results,
+including plots, land in `target/criterion/`.
+
 ## License
 
 This project is licensed under the [MIT license].

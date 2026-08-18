@@ -2,11 +2,12 @@
 Modal app for training Noodle on cloud GPUs.
 
 Usage:
-    # Upload training corpus
-    modal volume put noodle-data corpus/tinystories-train.txt /corpus/
+    # Run training, streaming the corpus from HuggingFace (default)
+    modal run jobs/modal/train.py --max-epochs 20
 
-    # Run training
-    modal run jobs/modal/train.py --corpus-file /data/corpus/tinystories-train.txt --max-epochs 20
+    # Train on a corpus file uploaded to the volume
+    modal volume put noodle-data corpus/tinystories-train.txt /corpus/
+    modal run jobs/modal/train.py --corpus /data/corpus/tinystories-train.txt --max-epochs 20
 
     # List volume contents
     modal run jobs/modal/train.py::list_volume
@@ -47,12 +48,14 @@ image = (
     .add_local_file("Cargo.toml", "/noodle/Cargo.toml", copy=True)
     .add_local_file("Cargo.lock", "/noodle/Cargo.lock", copy=True)
     .add_local_file("chat.rs", "/noodle/chat.rs", copy=True)
+    .add_local_file("corpus.rs", "/noodle/corpus.rs", copy=True)
     .add_local_file("eval.rs", "/noodle/eval.rs", copy=True)
     .add_local_file("finetune.rs", "/noodle/finetune.rs", copy=True)
     .add_local_file("inference.rs", "/noodle/inference.rs", copy=True)
     .add_local_file("lib.rs", "/noodle/lib.rs", copy=True)
     .add_local_file("main.rs", "/noodle/main.rs", copy=True)
     .add_local_file("model.rs", "/noodle/model.rs", copy=True)
+    .add_local_file("opts.rs", "/noodle/opts.rs", copy=True)
     .add_local_file("tokenizer.rs", "/noodle/tokenizer.rs", copy=True)
     .add_local_file("train.rs", "/noodle/train.rs", copy=True)
     # Pre-compile release binary during image build
@@ -70,7 +73,7 @@ image = (
     timeout=86400,  # 24 hours max
 )
 def train_noodle(
-    corpus_file: str,
+    corpus: str,
     model_dir: str = "/data/models/noodle",
     max_epochs: int = 10,
 ):
@@ -78,10 +81,12 @@ def train_noodle(
     import subprocess
     import os
 
-    # Verify corpus exists
-    if not os.path.exists(corpus_file):
+    # Remote corpora (hf:// or http(s)://) are streamed by the noodle binary;
+    # anything else is a file that must exist in the volume
+    is_remote = corpus.startswith(("hf://", "http://", "https://"))
+    if not is_remote and not os.path.exists(corpus):
         raise FileNotFoundError(
-            f"Corpus file not found: {corpus_file}\n"
+            f"Corpus file not found: {corpus}\n"
             f"Upload with: modal volume put {VOLUME_NAME} <local-file> /corpus/"
         )
 
@@ -92,7 +97,7 @@ def train_noodle(
     cmd = [
         "/noodle/target/release/noodle",
         "train",
-        corpus_file,
+        corpus,
         model_dir,
         "--backend",
         "cuda",
@@ -101,7 +106,7 @@ def train_noodle(
     ]
 
     print(f"Running: {' '.join(cmd)}")
-    print(f"Corpus: {corpus_file}")
+    print(f"Corpus: {corpus}")
     print(f"Model dir: {model_dir}")
     print(f"Max epochs: {max_epochs}")
     print("-" * 60)
@@ -160,19 +165,22 @@ def list_volume(path: str = "/data"):
 
 @app.local_entrypoint()
 def main(
-    corpus_file: str,
+    corpus: str = "hf://roneneldan/TinyStories/TinyStoriesV2-GPT4-train.txt",
     model_dir: str = "/data/models/noodle",
     max_epochs: int = 10,
 ):
     """Train Noodle on Modal GPU.
 
     Args:
-        corpus_file: Path to corpus file in the volume (e.g., /data/corpus/tinystories-train.txt)
+        corpus: Corpus to train on: an hf://owner/repo/file spec or http(s):// URL
+            (streamed), or a path to a file in the volume
+            (e.g., /data/corpus/tinystories-train.txt). Defaults to streaming
+            TinyStories from HuggingFace.
         model_dir: Directory to save model in the volume (default: /data/models/noodle)
         max_epochs: Maximum training epochs (default: 10)
     """
     train_noodle.remote(
-        corpus_file=corpus_file,
+        corpus=corpus,
         model_dir=model_dir,
         max_epochs=max_epochs,
     )

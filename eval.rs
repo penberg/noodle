@@ -8,7 +8,7 @@ use burn::{
 };
 
 use crate::{
-    Result,
+    CorpusSource, Result,
     model::{Model, ModelConfig},
     tokenizer::Tokenizer,
 };
@@ -16,17 +16,17 @@ use crate::{
 const BATCH_SIZE: usize = 8;
 const LOG_INTERVAL: usize = 100;
 
-pub fn eval(model_path: &Path, corpus_path: &Path, backend: crate::Backend) -> Result<()> {
+pub fn eval(model_path: &Path, corpus: &CorpusSource, backend: crate::Backend) -> Result<()> {
     #[cfg(debug_assertions)]
     eprintln!("Warning: running in debug mode, use --release for faster evaluation");
 
     let config = ModelConfig::load(model_path)?;
     let ctx_len = config.ctx_len;
 
-    eprintln!("Evaluating model on {}", corpus_path.display());
+    eprintln!("Evaluating model on {}", corpus);
 
     let tokenizer = Tokenizer::new()?;
-    let tokens = tokenizer.encode_file(corpus_path)?;
+    let tokens = tokenizer.encode_reader(corpus.open()?)?;
     let num_tokens = tokens.len();
 
     let tokens_per_batch = BATCH_SIZE * ctx_len;

@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
     path::Path,
 };
 
@@ -36,8 +36,13 @@ impl Tokenizer {
 
     /// Tokenize a file line-by-line, preserving newlines.
     pub fn encode_file(&self, path: &Path) -> Result<Vec<Token>> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
+        self.encode_reader(File::open(path)?)
+    }
+
+    /// Tokenize a stream line-by-line, preserving newlines. Tokens are
+    /// produced as data arrives, so the full text is never held in memory.
+    pub fn encode_reader<R: Read>(&self, reader: R) -> Result<Vec<Token>> {
+        let reader = BufReader::new(reader);
 
         let mut tokens = Vec::new();
         let mut lines_processed = 0;

@@ -9,7 +9,7 @@ use burn::{
 };
 
 use crate::{
-    Result,
+    CorpusSource, Result,
     model::{Model, ModelConfig, Trainer},
     tokenizer::{Token, Tokenizer},
 };
@@ -49,8 +49,8 @@ type Example = (Vec<Token>, Vec<Token>);
 /// ### Response:
 /// <response text>
 /// ```
-fn parse_instruction_file(path: &Path) -> Result<Vec<Example>> {
-    let text = std::fs::read_to_string(path)?;
+fn parse_instruction_file(input: &CorpusSource) -> Result<Vec<Example>> {
+    let text = input.read_to_string()?;
     let tokenizer = Tokenizer::new()?;
     let mut examples = Vec::new();
 
@@ -171,7 +171,7 @@ fn prepare_example(
 
 pub fn finetune(
     model_path: &Path,
-    input: &Path,
+    input: &CorpusSource,
     output: &Path,
     backend: crate::Backend,
     max_epochs: usize,

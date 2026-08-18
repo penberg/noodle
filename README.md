@@ -14,25 +14,30 @@ Noodle is a language model implemented from scratch in Rust. It's a decoder-only
 
 ## Getting Started
 
-### Download training corpus
-
-```console
-> mkdir -p corpus
-> curl -L https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStoriesV2-GPT4-train.txt -o corpus/tinystories-train.txt
-```
-
 ### Training the model
 
-First, do a quick training pass with a small testing dataset to verify everything is working:
+Noodle streams the training corpus directly from HuggingFace — no download step needed. First, do a quick training pass with the small validation split to verify everything is working:
 
 ```console
-> head -10000 corpus/tinystories-train.txt > corpus/tinystories-test.txt
-> cargo run --release -- train corpus/tinystories-test.txt models/noodle --max-epochs 20
+> cargo run --release -- train hf://roneneldan/TinyStories/TinyStoriesV2-GPT4-valid.txt models/noodle --max-epochs 1
 ```
 
 Then, train the model with the full dataset:
 
 ```console
+> cargo run --release -- train hf://roneneldan/TinyStories/TinyStoriesV2-GPT4-train.txt models/noodle --max-epochs 20
+```
+
+The corpus argument accepts an `hf://owner/repo/file` spec (streamed from a HuggingFace dataset repository), any `http(s)://` URL, or a local file path.
+
+### Training from local files
+
+You can also download the corpus and train from a local file:
+
+```console
+> mkdir -p corpus
+> curl -L https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStoriesV2-GPT4-train.txt -o corpus/tinystories-train.txt
+> head -10000 corpus/tinystories-train.txt > corpus/tinystories-test.txt
 > cargo run --release -- train corpus/tinystories-train.txt models/noodle --max-epochs 20
 ```
 
@@ -55,16 +60,25 @@ For faster training, you can use [Modal](https://modal.com/) to train on cloud G
 
 **Test with small dataset first:**
 
+The corpus is streamed from HuggingFace by default, so no upload step is needed:
+
 ```console
-> uv run modal volume put noodle-data corpus/tinystories-test.txt /corpus/
-> uv run modal run jobs/modal/train.py --corpus-file /data/corpus/tinystories-test.txt --max-epochs 1
+> uv run modal run jobs/modal/train.py --corpus hf://roneneldan/TinyStories/TinyStoriesV2-GPT4-valid.txt --max-epochs 1
 ```
 
 **Run full training on Modal GPU:**
 
 ```console
+> uv run modal run jobs/modal/train.py --max-epochs 20
+```
+
+**Train on a local corpus file:**
+
+You can also upload a corpus file to the volume and train on that:
+
+```console
 > uv run modal volume put noodle-data corpus/tinystories-train.txt /corpus/
-> uv run modal run jobs/modal/train.py --corpus-file /data/corpus/tinystories-train.txt --max-epochs 20
+> uv run modal run jobs/modal/train.py --corpus /data/corpus/tinystories-train.txt --max-epochs 20
 ```
 
 **Download trained model to local machine:**
@@ -118,7 +132,7 @@ You can fine-tune a pre-trained model on instruction data to teach it to follow 
 The fine-tuning command takes the following arguments:
 
 - `model` — Path to the pre-trained model `.mpk` file
-- `input` — Path to an instruction text file (training data)
+- `input` — Instruction text file (training data): a local path, `hf://owner/repo/file` spec, or `http(s)://` URL
 - `output` — Output directory for the fine-tuned model
 
 Optional flags:

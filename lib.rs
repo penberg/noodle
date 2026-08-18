@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+pub mod corpus;
 pub mod eval;
 pub mod finetune;
 pub mod inference;
@@ -7,6 +8,7 @@ pub mod model;
 pub mod tokenizer;
 pub mod train;
 
+pub use corpus::CorpusSource;
 pub use eval::eval;
 pub use finetune::finetune;
 pub use inference::generate_next_token;
@@ -71,6 +73,7 @@ pub enum Error {
     Io(std::io::Error),
     Tokenizer(String),
     Burn(String),
+    Corpus(String),
 }
 
 impl From<std::io::Error> for Error {
@@ -85,6 +88,7 @@ impl std::fmt::Display for Error {
             Error::Io(e) => write!(f, "{}", e),
             Error::Tokenizer(s) => write!(f, "{}", s),
             Error::Burn(s) => write!(f, "{}", s),
+            Error::Corpus(s) => write!(f, "{}", s),
         }
     }
 }

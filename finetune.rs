@@ -448,7 +448,7 @@ fn finetune_loop<B: AutodiffBackend>(
             break;
         }
     }
-    let generated = tokenizer.decode(session.history())?;
+    let generated = tokenizer.decode_lossy(session.history());
     eprintln!("Test: \"{}\" -> \"{}\"", test_prompt, generated);
     eprintln!(
         "Fine-tuning complete. Best model saved to {}",

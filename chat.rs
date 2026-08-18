@@ -71,7 +71,10 @@ fn chat_loop<B: Backend>(model_path: &Path, device: B::Device) -> noodle::Result
             continue;
         }
 
-        // Generate tokens one at a time, streaming output
+        // Generate tokens one at a time, streaming output. A token is a byte
+        // sequence, not a character sequence: a multi-byte character can be
+        // split across tokens, so bytes are buffered until they decode.
+        let mut pending: Vec<u8> = Vec::new();
         for _ in 0..max_tokens {
             let next_token = session.next_token(&config, &mut rng);
 
@@ -82,13 +85,45 @@ fn chat_loop<B: Backend>(model_path: &Path, device: B::Device) -> noodle::Result
                 break;
             }
 
-            // Decode and print just this token
-            let token_text = tokenizer.decode(&[next_token])?;
-            print!("{}", token_text);
+            pending.extend_from_slice(&tokenizer.decode_bytes(&[next_token]));
+            flush_utf8(&mut pending, &mut stdout)?;
             stdout.flush()?;
+        }
+        // Generation stopped mid-character; show what remains rather than drop it.
+        if !pending.is_empty() {
+            print!("{}", String::from_utf8_lossy(&pending));
         }
         println!();
     }
 
     Ok(())
+}
+
+/// Write the longest decodable prefix of `pending` to `out`, leaving only a
+/// trailing incomplete UTF-8 sequence (if any) behind for the next token to
+/// complete. Invalid bytes come out as U+FFFD so one bad token cannot wedge
+/// the stream.
+fn flush_utf8(pending: &mut Vec<u8>, out: &mut impl Write) -> io::Result<()> {
+    loop {
+        match std::str::from_utf8(pending) {
+            Ok(text) => {
+                out.write_all(text.as_bytes())?;
+                pending.clear();
+                return Ok(());
+            }
+            Err(err) => {
+                out.write_all(&pending[..err.valid_up_to()])?;
+                match err.error_len() {
+                    Some(bad) => {
+                        out.write_all("\u{FFFD}".as_bytes())?;
+                        pending.drain(..err.valid_up_to() + bad);
+                    }
+                    None => {
+                        pending.drain(..err.valid_up_to());
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
 }

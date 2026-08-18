@@ -348,7 +348,7 @@ fn train_loop<B: AutodiffBackend>(
     for _ in 0..20 {
         session.next_token(&config, &mut rng);
     }
-    let generated = tokenizer.decode(session.history())?;
+    let generated = tokenizer.decode_lossy(session.history());
     eprintln!("Test: \"{}\" -> \"{}\"", test_prompt, generated);
     eprintln!(
         "Training complete. Best model saved to {}",

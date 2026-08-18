@@ -34,6 +34,23 @@ impl Tokenizer {
             .map_err(|e| crate::Error::Tokenizer(e.to_string()))
     }
 
+    /// Decode tokens to raw bytes. A BPE token holds an arbitrary byte
+    /// sequence, so the result may start or end in the middle of a multi-byte
+    /// character; callers streaming token by token must buffer the bytes
+    /// until they form valid UTF-8.
+    pub fn decode_bytes(&self, tokens: &[Token]) -> Vec<u8> {
+        self.bpe
+            ._decode_native_and_split(tokens.to_vec())
+            .flatten()
+            .collect()
+    }
+
+    /// Decode tokens, substituting U+FFFD for invalid or incomplete UTF-8
+    /// instead of failing. Sampled output can legitimately end mid-character.
+    pub fn decode_lossy(&self, tokens: &[Token]) -> String {
+        String::from_utf8_lossy(&self.decode_bytes(tokens)).into_owned()
+    }
+
     /// Tokenize a file line-by-line, preserving newlines.
     pub fn encode_file(&self, path: &Path) -> Result<Vec<Token>> {
         self.encode_reader(File::open(path)?)
@@ -67,5 +84,47 @@ impl Tokenizer {
             tokens.len()
         );
         Ok(tokens)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A multi-byte character can be split across tokens, so decoding a
+    /// single token may not be valid UTF-8 — but the bytes always are once
+    /// concatenated.
+    #[test]
+    fn decode_bytes_reassembles_split_characters() {
+        let tokenizer = Tokenizer::new().unwrap();
+        let text = "Sōmen — “noodles”";
+        let tokens = tokenizer.encode(text);
+
+        let per_token: Vec<u8> = tokens
+            .iter()
+            .flat_map(|&t| tokenizer.decode_bytes(&[t]))
+            .collect();
+        assert_eq!(per_token, text.as_bytes());
+
+        // At least one token in this text ends mid-character, which is the
+        // case that makes strict single-token decode fail.
+        assert!(
+            tokens
+                .iter()
+                .any(|&t| std::str::from_utf8(&tokenizer.decode_bytes(&[t])).is_err())
+        );
+    }
+
+    #[test]
+    fn decode_lossy_tolerates_partial_characters() {
+        let tokenizer = Tokenizer::new().unwrap();
+        let tokens = tokenizer.encode("Sōmen — “noodles”");
+        let split = tokens
+            .iter()
+            .find(|&&t| std::str::from_utf8(&tokenizer.decode_bytes(&[t])).is_err())
+            .expect("text should produce a token ending mid-character");
+
+        assert!(tokenizer.decode(&[*split]).is_err());
+        assert!(tokenizer.decode_lossy(&[*split]).contains('\u{FFFD}'));
     }
 }

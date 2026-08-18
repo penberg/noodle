@@ -9,8 +9,14 @@ fn main() {
 
     match opts.command {
         Cmd::Train(cmd) => {
-            noodle::train(&cmd.input, &cmd.output, cmd.backend.into(), cmd.max_epochs)
-                .expect("training failed");
+            noodle::train(
+                &cmd.input,
+                &cmd.output,
+                cmd.backend.into(),
+                cmd.max_epochs,
+                cmd.model.into(),
+            )
+            .expect("training failed");
         }
         Cmd::Finetune(cmd) => {
             noodle::finetune(

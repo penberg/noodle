@@ -286,7 +286,16 @@ mod tests {
         type B = NdArray<f32>;
 
         let device = NdArrayDevice::default();
-        let config = ModelConfig::new(2, 32, 2, 16, 64);
+        let config = ModelConfig {
+            preset: None,
+            n_layers: 2,
+            emb_dim: 32,
+            n_heads: 2,
+            head_dim: 16,
+            hidden_dim: 128,
+            ctx_len: 16,
+            vocab_size: 64,
+        };
         let model = Model::<B>::new(&config, &device);
 
         let mut session = Session::new(model, device);
@@ -313,7 +322,16 @@ mod tests {
         type B = NdArray<f32>;
 
         let device = NdArrayDevice::default();
-        let config = ModelConfig::new(2, 32, 2, 1, 64);
+        let config = ModelConfig {
+            preset: None,
+            n_layers: 2,
+            emb_dim: 32,
+            n_heads: 2,
+            head_dim: 16,
+            hidden_dim: 128,
+            ctx_len: 1,
+            vocab_size: 64,
+        };
         let model = Model::<B>::new(&config, &device);
 
         let mut session = Session::new(model, device);

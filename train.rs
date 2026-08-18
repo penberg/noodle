@@ -15,13 +15,6 @@ use crate::{
     tokenizer::Tokenizer,
 };
 
-// Canonical Noodle model hyperparameters (sized for small datasets ~300K-1M tokens)
-const LAYERS: usize = 4;
-const D_MODEL: usize = 256;
-const HEADS: usize = 4;
-const CTX_LEN: usize = 256;
-const VOCAB_SIZE: usize = 50281; // p50k_base tokenizer
-
 // Training hyperparameters
 const BATCH_SIZE: usize = 8;
 const LOG_INTERVAL: usize = 10;
@@ -42,6 +35,7 @@ pub fn train(
     output: &Path,
     backend: crate::Backend,
     max_epochs: usize,
+    config: ModelConfig,
 ) -> Result<()> {
     #[cfg(debug_assertions)]
     eprintln!("Warning: running in debug mode, use --release for faster training");
@@ -53,7 +47,6 @@ pub fn train(
 
     // Create output directory and save config before training
     std::fs::create_dir_all(output)?;
-    let config = ModelConfig::new(LAYERS, D_MODEL, HEADS, CTX_LEN, VOCAB_SIZE);
     let config_path = output.join("model.json");
     let config_json =
         serde_json::to_string_pretty(&config).map_err(|e| crate::Error::Burn(e.to_string()))?;

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 820" width="1000" height="820" role="img" aria-label="Noodle model architecture: input tokens, token embedding, four pre-norm transformer blocks with fused QKV attention, parameter-free RMS norm on Q and K, rotary position embeddings and a GELU feed-forward network, then a final layer norm and an untied output projection to logits.">
   <title>Noodle model architecture</title>
-  <desc>A decoder-only transformer. Left: the top-level stack, from input tokens through a token embedding, four transformer blocks, a final layer norm and an output projection, to logits. Right: one transformer block expanded, showing a pre-norm layer norm, a fused QKV linear, parameter-free RMS norm on Q and K, rotary position embeddings, masked softmax attention, an output projection with dropout, and a GELU feed-forward network, each wrapped in a residual connection. Sizes are the default configuration from train.rs.</desc>
+  <desc>A decoder-only transformer. Left: the top-level stack, from input tokens through a token embedding, four transformer blocks, a final layer norm and an output projection, to logits. Right: one transformer block expanded, showing a pre-norm layer norm, a fused QKV linear, parameter-free RMS norm on Q and K, rotary position embeddings, masked softmax attention, an output projection with dropout, and a GELU feed-forward network, each wrapped in a residual connection. Sizes are the Sōmen preset, the default configuration.</desc>
 
   <style>
     :root {
@@ -39,7 +39,7 @@
   <rect x="0" y="0" width="1000" height="820" fill="var(--bg)"/>
 
   <text class="t"  x="56" y="32">Noodle model architecture</text>
-  <text class="st" x="56" y="54">decoder-only transformer · default config: layers=4 · d_model=256 · heads=4 · d_head=64 · ctx_len=256 · vocab=50281 (p50k_base)</text>
+  <text class="st" x="56" y="54">decoder-only transformer · Sōmen preset (default): n_layers=4 · emb_dim=256 · n_heads=4 · head_dim=64 · ctx_len=256 · vocab=50281 (p50k_base)</text>
 
   <!-- ============ left column: top-level stack ============ -->
 

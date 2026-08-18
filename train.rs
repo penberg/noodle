@@ -392,12 +392,12 @@ fn validate<B: AutodiffBackend>(
 fn log_gpu_adapters() {
     use wgpu::{Backends, Instance, InstanceDescriptor};
 
-    let instance = Instance::new(&InstanceDescriptor {
+    let instance = Instance::new(InstanceDescriptor {
         backends: Backends::all(),
-        ..Default::default()
+        ..InstanceDescriptor::new_without_display_handle()
     });
 
-    let adapters = instance.enumerate_adapters(Backends::all());
+    let adapters = futures_lite::future::block_on(instance.enumerate_adapters(Backends::all()));
 
     eprintln!("Available GPU adapters ({}):", adapters.len());
     for (i, adapter) in adapters.iter().enumerate() {

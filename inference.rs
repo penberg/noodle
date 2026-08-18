@@ -201,22 +201,26 @@ fn sample_token<R: Rng>(logits: &[f32], config: &SamplingConfig, rng: &mut R) ->
         return argmax(logits) as Token;
     }
 
-    // Apply temperature
-    let scaled: Vec<f32> = logits.iter().map(|&x| x / config.temperature).collect();
+    // Dividing by a positive temperature is monotonic, so it cannot reorder anything: rank
+    // on the raw logits and scale only the handful that survive top-k. Scaling the whole
+    // vocabulary first meant 50281 divisions per token to use 40 of them.
+    let top_k = config.top_k.clamp(1, logits.len());
+    let by_logit_desc = |&a: &u32, &b: &u32| logits[b as usize].total_cmp(&logits[a as usize]);
 
-    // Get indices sorted by logit value (descending)
-    let mut indices: Vec<usize> = (0..scaled.len()).collect();
-    indices.sort_by(|&a, &b| scaled[b].partial_cmp(&scaled[a]).unwrap());
-
-    // Apply top-k: keep only top k tokens
-    let top_k = config.top_k.min(indices.len());
-    let indices: Vec<usize> = indices.into_iter().take(top_k).collect();
+    // Partition the k largest to the front in linear time, then order just those. Sorting
+    // the whole vocabulary to keep the top 40 was the most expensive thing on the host
+    // side of a decode step.
+    let mut indices: Vec<u32> = (0..logits.len() as u32).collect();
+    indices.select_nth_unstable_by(top_k - 1, by_logit_desc);
+    indices.truncate(top_k);
+    indices.sort_unstable_by(by_logit_desc);
 
     // Compute softmax over filtered tokens
-    let max_logit = scaled[indices[0]];
+    let scale = |i: u32| logits[i as usize] / config.temperature;
+    let max_logit = scale(indices[0]);
     let mut probs: Vec<(usize, f32)> = indices
         .iter()
-        .map(|&i| (i, (scaled[i] - max_logit).exp()))
+        .map(|&i| (i as usize, (scale(i) - max_logit).exp()))
         .collect();
 
     let sum: f32 = probs.iter().map(|(_, p)| p).sum();
@@ -270,9 +274,10 @@ fn argmax(logits: &[f32]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{SeedableRng, rngs::StdRng};
+
     use crate::model::{Model, ModelConfig};
     use burn::backend::{NdArray, ndarray::NdArrayDevice};
-    use rand::{SeedableRng, rngs::StdRng};
 
     /// A caller that stops on a token must be able to keep it out of the conversation, or
     /// it becomes context for the next turn and counts against the repetition penalty.
@@ -320,5 +325,75 @@ mod tests {
         }
 
         assert_eq!(session.history().len(), 5);
+    }
+
+    /// Deterministic pseudo-random logits, so the test exercises a realistic spread rather
+    /// than a sorted or constant vector.
+    fn fake_logits(n: usize) -> Vec<f32> {
+        let mut state: u32 = 0x1234_5678;
+        (0..n)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state as f32 / u32::MAX as f32) * 20.0 - 10.0
+            })
+            .collect()
+    }
+
+    /// Selecting the top k by partition must pick the same set, in the same order, as
+    /// sorting everything and taking the first k. This is the property the fast path
+    /// replaced a full sort with.
+    #[test]
+    fn top_k_selection_matches_full_sort() {
+        let logits = fake_logits(50281);
+        let k = 40;
+
+        let mut expected: Vec<u32> = (0..logits.len() as u32).collect();
+        expected.sort_by(|&a, &b| logits[b as usize].total_cmp(&logits[a as usize]));
+        expected.truncate(k);
+
+        let by_logit_desc = |&a: &u32, &b: &u32| logits[b as usize].total_cmp(&logits[a as usize]);
+        let mut actual: Vec<u32> = (0..logits.len() as u32).collect();
+        actual.select_nth_unstable_by(k - 1, by_logit_desc);
+        actual.truncate(k);
+        actual.sort_unstable_by(by_logit_desc);
+
+        let values = |v: &[u32]| v.iter().map(|&i| logits[i as usize]).collect::<Vec<_>>();
+        assert_eq!(values(&expected), values(&actual));
+    }
+
+    /// A zero or negative temperature takes the greedy path, which must return the argmax.
+    #[test]
+    fn greedy_sampling_returns_argmax() {
+        let mut logits = fake_logits(1024);
+        logits[777] = 100.0;
+
+        let config = SamplingConfig {
+            temperature: 0.0,
+            ..SamplingConfig::default()
+        };
+        let mut rng = StdRng::seed_from_u64(1);
+
+        assert_eq!(sample_token(&logits, &config, &mut rng), 777);
+    }
+
+    /// Every token the sampler can return has to come from the top-k set, whatever the
+    /// draw: top_k = 1 pins it to the single most likely token.
+    #[test]
+    fn sampling_respects_top_k() {
+        let mut logits = fake_logits(1024);
+        logits[321] = 50.0;
+
+        let config = SamplingConfig {
+            temperature: 1.0,
+            top_k: 1,
+            ..SamplingConfig::default()
+        };
+
+        for seed in 0..16 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            assert_eq!(sample_token(&logits, &config, &mut rng), 321);
+        }
     }
 }
